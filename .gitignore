@@ -1,0 +1,11 @@
+# Secrets: tokens and the Jellyfin API key
+.env
+.env.*
+!.env.example
+
+node_modules/
+
+# Runtime state
+data/
+tmp/
+*.log
