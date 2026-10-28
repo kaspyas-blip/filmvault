@@ -23,6 +23,7 @@ const NEXT_EPISODE_DELAY_MS = 15_000;
 const PROGRESS_SAVE_MS = 60_000;
 const CZECH_LIST_CACHE_MS = 5 * 60_000;
 const GENRE_CACHE_MS = 10 * 60_000;
+const SLOW_LIST_MS = 1500;
 // Played this close to the end counts as watched (credits).
 const WATCHED_TAIL = 0.92;
 
@@ -805,6 +806,7 @@ export function startBot(player) {
     if (!allowed(interaction)) {
       return interaction.reply({ content: 'Na ovládání kina nemáš oprávnění.', flags: MessageFlags.Ephemeral });
     }
+    const received = Date.now();
     try {
       if (isList) await handleListInteraction(interaction);
       else if (isNextUp) await handleNextUpButton(interaction);
@@ -812,6 +814,11 @@ export function startBot(player) {
       else await handleCommand(interaction);
     } catch (error) {
       await replyError(interaction, error);
+    } finally {
+      const handled = Date.now() - received;
+      if (isList && handled > SLOW_LIST_MS) {
+        console.warn(`Slow list ${interaction.customId}: arrived after ${received - interaction.createdTimestamp} ms, handled in ${handled} ms`);
+      }
     }
   });
 
