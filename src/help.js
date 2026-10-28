@@ -20,7 +20,8 @@ function helpEmbed(voiceChannelId) {
           '`/pust film` – pustí film nebo díl, název se našeptává. Volitelně `od` (`1:20:00`, `45` = minut, `0` = od začátku), `zvuk` a `titulky`.',
           '`/filmy` – všechny filmy po 20 na stranu. Filtry: `zanr`, `rok` (`2005` nebo `1990-1999`), `cesky` (jen s dabingem), `razeni` (název, naposledy přidané, nejnovější, hodnocení). Film pustíš z nabídky pod seznamem.',
           '`/serialy` – vybereš seriál → sérii → díl.',
-          '`/videli` – co jsme viděli, kdy, kdo to pustil a kde jsme skončili. Nedokoukané jde pustit dál.',
+          '`/videli` – co jsme viděli, kdy, kdo to pustil a kde jsme skončili. Nedokoukané jde pustit dál, omylem zapsané odebrat z nabídky 🗑.',
+          '`/zapsat film` – ručně zapíše do historie, co jste viděli jinde. Volitelně `kdy` (`včera`, `28.10. 21:30`) a `skoncili` (`1:20:00`, jinak dokoukáno).',
         ].join('\n'),
       },
       {

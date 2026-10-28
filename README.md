@@ -11,7 +11,7 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 - **Navazování** – pokračuje tam, kde jste skončili, pozice se ukládá do Jellyfinu
 - **Další díl** – po dohrání dílu seriálu sám pustí další se stejným jazykem
 - **Čeština napřed** – bez výběru vezme český dabing (a české vynucené titulky), jinak české titulky
-- **Historie** – `/videli` ukáže, co běželo, kdo to pustil a kde jste skončili
+- **Historie** – `/videli` ukáže, co běželo, kdo to pustil a kde jste skončili; přes `/zapsat` jde přidat ručně a z nabídky odebrat
 - **HDR filmy** se převádí na normální barvy (jinak by v Discordu byly vybledlé)
 - **Nápověda** se sama připne do textového kanálu
 
@@ -114,7 +114,7 @@ ID kanálu, serveru nebo role zkopíruješ, když v Discordu zapneš **Nastaven�
 npm start
 ```
 
-Když v konzoli uvidíš `Registered 12 slash commands`, je hotovo. Bot do textového kanálu sám připne nápovědu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
+Když v konzoli uvidíš `Registered 13 slash commands`, je hotovo. Bot do textového kanálu sám připne nápovědu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
 
 ### 8. Automatické spouštění (Windows)
 
@@ -136,7 +136,8 @@ Na Linuxu použij třeba službu systemd nebo `pm2`.
 | `/zvuk stopa`, `/titulky stopa` | změní zvukovou stopu nebo titulky za běhu |
 | `/filmy [zanr] [rok] [cesky] [razeni] [strana]` | seznam filmů s filtry, film jde pustit z nabídky |
 | `/serialy [strana]` | seriál → série → díl |
-| `/videli [strana]` | historie kina, nedokoukané jde pustit dál |
+| `/videli [strana]` | historie kina, nedokoukané jde pustit dál, záznamy jde odebrat z nabídky 🗑 |
+| `/zapsat film [kdy] [skoncili]` | ručně zapíše do historie, co jste viděli jinde; `kdy` = `včera`, `28.10.`, `28.10. 21:30`; `skoncili` = `1:20:00` (prázdné = dokoukáno) |
 | `/hraje` | co hraje a v jakém čase |
 | `/stop`, `/odejdi` | zastaví / zastaví a odejde z hovoru |
 

@@ -30,9 +30,36 @@ function save() {
   return writing;
 }
 
-/** Newest first: { id, label, by, startedAt, endedAt, position, duration, finished } */
+/** Newest first: { id, label, by, startedAt, endedAt, position, duration, finished, manual? } */
 export async function history() {
   return load();
+}
+
+/** Stable identifier of one entry, used by the remove menu. */
+export function entryKey(entry) {
+  return `${entry.id}:${entry.startedAt}`;
+}
+
+/** Adds an entry by hand (watched outside the cinema), keeping the list newest first. */
+export async function addWatch({ id, label, by, endedAt, position, duration, finished }) {
+  const list = await load();
+  const watched = finished ? duration ?? 0 : position;
+  const entry = { id, label, by, startedAt: endedAt - Math.round(watched * 1000), endedAt, position: Math.round(position), duration, finished, manual: true };
+  const index = list.findIndex(e => e.endedAt < endedAt);
+  list.splice(index === -1 ? list.length : index, 0, entry);
+  list.length = Math.min(list.length, MAX_ENTRIES);
+  await save();
+  return entry;
+}
+
+/** Removes the entry with this key; returns it, or null when it is already gone. */
+export async function removeWatch(key) {
+  const list = await load();
+  const index = list.findIndex(e => entryKey(e) === key);
+  if (index === -1) return null;
+  const [removed] = list.splice(index, 1);
+  await save();
+  return removed;
 }
 
 export async function recordWatch({ id, label, by, startedAt, position, duration, finished }) {

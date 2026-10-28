@@ -31,3 +31,37 @@ export function parseTime(text) {
   if (!sign) return { seconds, relative: false };
   return { seconds: sign === '-' ? -seconds : seconds, relative: true };
 }
+
+const DAY_WORDS = { dnes: 0, dneska: 0, vcera: 1, včera: 1, predevcirem: 2, předevčírem: 2 };
+const DEFAULT_HOUR = 20;
+
+/**
+ * Parses when something was watched, in local time: "včera", "dnes 21:30",
+ * "28.10.", "28.10.2026 20:00" or just "21:30" (today). Empty means now.
+ * A day without a year that would lie in the future means last year.
+ * Returns epoch milliseconds, or null.
+ */
+export function parseWhen(text, now = new Date()) {
+  const input = text?.trim().toLowerCase().replace(/\s+/g, ' ') ?? '';
+  if (!input) return now.getTime();
+  const match = /^(?:(dnes|dneska|včera|vcera|předevčírem|predevcirem)|(\d{1,2})\.\s?(\d{1,2})\.?(?:\s?(\d{4}))?)?\s?(?:(\d{1,2}):(\d{2}))?$/.exec(input);
+  if (!match || (!match[1] && !match[2] && !match[5])) return null;
+  const [, word, day, month, year, hour, minute] = match;
+  const date = new Date(now);
+  date.setSeconds(0, 0);
+  if (word) date.setDate(date.getDate() - DAY_WORDS[word]);
+  if (day) {
+    date.setFullYear(Number(year ?? now.getFullYear()), Number(month) - 1, Number(day));
+    if (date.getDate() !== Number(day)) return null;
+  }
+  if (hour) {
+    if (Number(hour) > 23 || Number(minute) > 59) return null;
+    date.setHours(Number(hour), Number(minute));
+  } else {
+    date.setHours(DEFAULT_HOUR, 0);
+  }
+  if (day && !year && date > now) date.setFullYear(date.getFullYear() - 1);
+  // "dnes" without a time later than now: it was watched today, so cap at now.
+  if (word && !hour && date > now) return now.getTime();
+  return date.getTime();
+}

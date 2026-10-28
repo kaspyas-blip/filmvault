@@ -4,13 +4,13 @@ import {
 } from 'discord.js';
 import { config } from './config.js';
 import { ensureHelpPinned } from './help.js';
-import { history, recordWatch } from './history.js';
+import { addWatch, entryKey, history, recordWatch, removeWatch } from './history.js';
 import {
   SORTS, audioTracks, defaultTracks, downloadPoster, durationSeconds, getItem, isCzech, itemLabel, listEpisodes, listGenres,
   listLibrary, listSeasons, mediaSource, nextEpisode, resumeSeconds, saveProgress, searchItems, subtitleTracks, trackLabel,
 } from './jellyfin.js';
 import { UserError } from './player.js';
-import { formatTime, parseTime } from './time.js';
+import { formatTime, parseTime, parseWhen } from './time.js';
 
 const ALONE_LEAVE_MS = 2 * 60_000;
 const ITEM_CACHE_MS = 60_000;
@@ -55,6 +55,10 @@ const commands = [
     .addIntegerOption(o => o.setName('strana').setDescription('Číslo strany').setMinValue(1)),
   new SlashCommandBuilder().setName('videli').setDescription('Co jsme už viděli a kde jsme skončili')
     .addIntegerOption(o => o.setName('strana').setDescription('Číslo strany').setMinValue(1)),
+  new SlashCommandBuilder().setName('zapsat').setDescription('Ručně zapíše do historie něco, co jste viděli jinde')
+    .addStringOption(o => o.setName('film').setDescription('Název filmu nebo dílu').setRequired(true).setAutocomplete(true))
+    .addStringOption(o => o.setName('kdy').setDescription('Kdy, např. včera, 28.10. nebo 28.10. 21:30; prázdné = teď'))
+    .addStringOption(o => o.setName('skoncili').setDescription('Kde jste skončili, např. 1:20:00; prázdné = dokoukáno')),
   new SlashCommandBuilder().setName('hraje').setDescription('Ukáže, co právě hraje'),
   new SlashCommandBuilder().setName('stop').setDescription('Zastaví přehrávání'),
   new SlashCommandBuilder().setName('odejdi').setDescription('Zastaví přehrávání a odpojí se z hovoru'),
@@ -133,7 +137,7 @@ export function startBot(player) {
     if (interaction.commandName === 'filmy') {
       const q = focused.value.toLowerCase();
       choices = (await genres()).filter(g => g.Name.toLowerCase().includes(q)).map(g => ({ name: choiceName(g.Name), value: g.Id }));
-    } else if (interaction.commandName === 'pust' && focused.name === 'film') {
+    } else if (['pust', 'zapsat'].includes(interaction.commandName) && focused.name === 'film') {
       const items = await searchItems(focused.value, 25);
       choices = items.map(item => ({ name: choiceName(itemLabel(item)), value: item.Id }));
     } else if (interaction.commandName === 'pust') {
@@ -443,24 +447,33 @@ export function startBot(player) {
     });
   }
 
-  async function historyList(page) {
+  async function historyList(page, notice = '') {
     const entries = await history();
     const pages = Math.max(1, Math.ceil(entries.length / HISTORY_PAGE_SIZE));
     page = Math.min(Math.max(1, page), pages);
     const shown = entries.slice((page - 1) * HISTORY_PAGE_SIZE, page * HISTORY_PAGE_SIZE);
     const lines = shown.map(e => {
       const state = e.finished ? '✅ dokoukáno' : `⏸ skončili jsme v ${formatTime(e.position)}${e.duration ? ` / ${formatTime(e.duration)}` : ''}`;
-      return `**${e.label}**\n${formatDate(e.endedAt)} · ${state} · ${e.by ?? '?'}`;
+      return `**${e.label}**\n${formatDate(e.endedAt)} · ${state} · ${e.manual ? '✍️ ' : ''}${e.by ?? '?'}`;
     });
     const components = [pageButtons('fh', page, pages)];
+    if (shown.length) {
+      // Select menu values must be unique.
+      const removable = [...new Map(shown.map(e => [entryKey(e), e])).values()];
+      components.unshift(selectRow(`fh:del:${page}`, '🗑 Odebrat z historie…', removable.map(e => ({
+        label: choiceName(e.label), description: formatDate(e.endedAt), value: entryKey(e),
+      }))));
+    }
     const unfinished = [...new Map(shown.filter(e => !e.finished).map(e => [e.id, e])).values()];
     if (unfinished.length) {
       components.unshift(selectRow('fh:play', 'Pokračovat ve sledování…',
         unfinished.map(e => ({ label: choiceName(e.label), description: `od ${formatTime(e.position)}`, value: e.id }))));
     }
     const embed = listEmbed('🕒 Co jsme viděli', lines, `Strana ${page} / ${pages}`);
-    if (!entries.length) embed.setDescription('Zatím nic. Historie se plní od teď, započítá se, co běželo aspoň 2 minuty.');
-    return { embeds: [embed], components };
+    if (!entries.length) {
+      embed.setDescription('Zatím nic. Historie se plní sama, započítá se, co běželo aspoň 2 minuty. Ručně přidáš přes /zapsat.');
+    }
+    return { content: notice, embeds: [embed], components };
   }
 
   function selectRow(id, placeholder, options) {
@@ -536,6 +549,14 @@ export function startBot(player) {
     const [prefix, action, ...rest] = interaction.customId.split(':');
     if (interaction.isStringSelectMenu()) {
       const [value] = interaction.values;
+      if (prefix === 'fh' && action === 'del') {
+        await interaction.deferUpdate();
+        const removed = await removeWatch(value);
+        const notice = removed
+          ? `🗑 Odebráno z historie: **${removed.label}** (${formatDate(removed.endedAt)})`
+          : 'Tenhle záznam už v historii není.';
+        return interaction.editReply(await historyList(Number(rest[0]), notice));
+      }
       if (action === 'play') {
         await interaction.deferReply();
         return startPlayback(interaction, await cachedItem(value));
@@ -589,6 +610,23 @@ export function startBot(player) {
     await refreshNowPlaying();
   }
 
+  async function handleAddWatch(interaction) {
+    const endedAt = parseWhen(interaction.options.getString('kdy'));
+    if (endedAt === null) throw new UserError('Nerozumím datu. Zkus včera, 28.10., 28.10.2026 nebo 28.10. 21:30.');
+    if (endedAt > Date.now() + 60_000) throw new UserError('To je v budoucnu. Zapsat jde jen to, co už jste viděli.');
+    const stopped = interaction.options.getString('skoncili');
+    const parsed = stopped ? parseTime(stopped) : null;
+    if (stopped && (!parsed || parsed.relative)) throw new UserError('Kde jste skončili, zadej jako 1:20:00 nebo 45 (minut).');
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const item = await resolveItem(interaction.options.getString('film', true));
+    const duration = durationSeconds(item);
+    const finished = !parsed || (!!duration && parsed.seconds >= duration * WATCHED_TAIL);
+    const position = finished ? duration ?? 0 : parsed.seconds;
+    await addWatch({ id: item.Id, label: itemLabel(item), by: userName(interaction), endedAt, position, duration, finished });
+    const state = finished ? 'jako dokoukané' : `se skončením v ${formatTime(position)}`;
+    return interaction.editReply(`✍️ Zapsáno do historie: **${itemLabel(item)}**, ${formatDate(endedAt)}, ${state}. Odebrat jde v /videli.`);
+  }
+
   async function handleCommand(interaction) {
     switch (interaction.commandName) {
       case 'pust':
@@ -617,6 +655,8 @@ export function startBot(player) {
       case 'videli':
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         return interaction.editReply(await historyList(interaction.options.getInteger('strana') ?? 1));
+      case 'zapsat':
+        return handleAddWatch(interaction);
       case 'serialy':
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         return interaction.editReply(await libraryList('series', interaction.options.getInteger('strana') ?? 1));
