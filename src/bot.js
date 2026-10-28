@@ -490,6 +490,25 @@ export function startBot(player) {
     series: { type: 'Series', prefix: 'fs:list', select: 'fs:series', title: '📺 Seriály v Jellyfinu', placeholder: 'Vybrat seriál z této strany…' },
   };
 
+  // Latest history entry per item: what /filmy and the episode list mark as seen or started.
+  async function watchStates() {
+    const states = new Map();
+    for (const entry of await history()) if (!states.has(entry.id)) states.set(entry.id, entry);
+    return states;
+  }
+
+  function watchMark(entry) {
+    if (!entry) return '';
+    return entry.finished ? ' ✅' : ` ⏸ ${formatTime(entry.position)}`;
+  }
+
+  function watchEmoji(entry) {
+    if (!entry) return undefined;
+    return entry.finished ? '✅' : '⏸️';
+  }
+
+  const WATCH_LEGEND = ' · ✅ viděli · ⏸ rozkoukané';
+
   async function libraryList(kind, page, filter = {}) {
     const library = LIBRARIES[kind];
     const start = (page - 1) * LIST_PAGE_SIZE;
@@ -504,18 +523,21 @@ export function startBot(player) {
     const pages = Math.max(1, Math.ceil(total / LIST_PAGE_SIZE));
     if (page > pages) return libraryList(kind, pages, filter);
     const rating = filter.sort === 'hodnoceni';
+    const states = kind === 'movies' ? await watchStates() : new Map();
     const lines = items.map((item, i) => `\`${String(start + i + 1).padStart(3)}\` ${itemLabel(item)}`
-      + (rating && item.CommunityRating ? ` · ⭐ ${item.CommunityRating.toFixed(1)}` : ''));
+      + (rating && item.CommunityRating ? ` · ⭐ ${item.CommunityRating.toFixed(1)}` : '')
+      + watchMark(states.get(item.Id)));
     const suffix = kind === 'movies' ? `:${encodeFilter(filter)}` : '';
     const components = [pageButtons(library.prefix, page, pages, [], suffix)];
     if (items.length) {
       components.unshift(selectRow(library.select, library.placeholder,
-        items.map(item => ({ label: choiceName(itemLabel(item)), value: item.Id }))));
+        items.map(item => ({ label: choiceName(itemLabel(item)), value: item.Id, emoji: watchEmoji(states.get(item.Id)) }))));
     }
     const described = await filterTitle(filter);
     const title = `${library.title}${described ? ` · ${described}` : ''} (${total})`;
     const sort = filter.sort && filter.sort !== 'nazev' ? ` · ${SORTS[filter.sort].label}` : '';
-    return { embeds: [listEmbed(title, lines, `Strana ${page} / ${pages}${sort}`)], components };
+    const legend = kind === 'movies' ? WATCH_LEGEND : '';
+    return { embeds: [listEmbed(title, lines, `Strana ${page} / ${pages}${sort}${legend}`)], components };
   }
 
   async function seasonList(seriesId) {
@@ -538,11 +560,15 @@ export function startBot(player) {
     const label = e => `E${String(e.IndexNumber ?? 0).padStart(2, '0')} ${e.Name}`;
     const first = episodes[0];
     const title = first ? `📺 ${first.SeriesName} – ${first.SeasonName}` : '📺 Série';
+    const states = await watchStates();
     const components = [pageButtons(`fs:eps:${seriesId}:${seasonId}`, page, pages, [button(`fs:seasons:${seriesId}`, '⬅ Série')])];
     if (shown.length) {
-      components.unshift(selectRow('fs:play', 'Pustit díl…', shown.map(e => ({ label: choiceName(label(e)), value: e.Id }))));
+      components.unshift(selectRow('fs:play', 'Pustit díl…', shown.map(e => ({
+        label: choiceName(label(e)), value: e.Id, emoji: watchEmoji(states.get(e.Id)),
+      }))));
     }
-    return { embeds: [listEmbed(title, shown.map(label), `Strana ${page} / ${pages}`)], components };
+    const lines = shown.map(e => label(e) + watchMark(states.get(e.Id)));
+    return { embeds: [listEmbed(title, lines, `Strana ${page} / ${pages}${WATCH_LEGEND}`)], components };
   }
 
   async function handleListInteraction(interaction) {

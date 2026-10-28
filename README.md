@@ -11,6 +11,7 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 - **Navazování** – pokračuje tam, kde jste skončili, pozice se ukládá do Jellyfinu
 - **Další díl** – po dohrání dílu seriálu sám pustí další se stejným jazykem
 - **Čeština napřed** – bez výběru vezme český dabing (a české vynucené titulky), jinak české titulky
+- **Přehled** – `/filmy` a seznam dílů označí, co jste viděli (✅) a co máte rozkoukané (⏸)
 - **Historie** – `/videli` ukáže, co běželo, kdo to pustil a kde jste skončili; přes `/zapsat` jde přidat ručně a z nabídky odebrat
 - **HDR filmy** se převádí na normální barvy (jinak by v Discordu byly vybledlé)
 - **Nápověda** se sama připne do textového kanálu
