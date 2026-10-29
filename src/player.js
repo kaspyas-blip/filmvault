@@ -20,6 +20,9 @@ const RESTART_SKIP_KEYFRAMES = 2;
 // Discord kept its buffer short, so the min forces 2 s.
 const PLAYOUT_DELAY_MIN = 200;
 const PLAYOUT_DELAY_MAX = 600;
+// Logs how evenly video frames go out, once a minute; a gap is a frame this late.
+const PACE_REPORT_MS = 60_000;
+const PACE_GAP_MS = 150;
 
 /** True for an Annex B H.264 access unit containing an IDR slice. */
 function isH264Keyframe(frame) {
@@ -77,6 +80,23 @@ function patchConnection(conn, isRestarting) {
     const original = media[name].bind(media);
     media[name] = (enabled, ...rest) => (enabled === false && isRestarting() ? undefined : original(enabled, ...rest));
   }
+  // Sending side of a stutter: video frames handed over late (ffmpeg not keeping up)
+  // show up here as gaps and as falling behind the film's own clock.
+  const pace = { start: 0, media: 0, last: 0, frames: 0, gaps: 0, maxGap: 0, maxBehind: 0, reported: 0 };
+  function watchPace(now, frametime, restarted) {
+    if (restarted || !pace.start) Object.assign(pace, { start: now, media: 0, last: now, reported: now });
+    const gap = now - pace.last;
+    pace.media += frametime;
+    pace.frames++;
+    pace.last = now;
+    if (gap > PACE_GAP_MS) pace.gaps++;
+    pace.maxGap = Math.max(pace.maxGap, gap);
+    pace.maxBehind = Math.max(pace.maxBehind, now - pace.start - pace.media);
+    if (now - pace.reported < PACE_REPORT_MS) return;
+    const line = `Video pace: ${pace.frames} frames, ${pace.gaps} gaps over ${PACE_GAP_MS} ms, longest ${Math.round(pace.maxGap)} ms, behind by up to ${Math.round(pace.maxBehind)} ms`;
+    (pace.gaps ? console.warn : console.log)(line);
+    Object.assign(pace, { frames: 0, gaps: 0, maxGap: 0, maxBehind: 0, reported: now });
+  }
   for (const track of tracks) {
     const send = conn[track.send].bind(conn);
     conn[track.send] = (frame, frametime) => {
@@ -90,6 +110,7 @@ function patchConnection(conn, isRestarting) {
         const { rtpConfig } = conn[track.packetizer];
         if (gapMs > 0) rtpConfig.timestamp += Math.round((gapMs * rtpConfig.clockRate) / 1000);
       }
+      if (track.video) watchPace(now, frametime, track.restarted);
       track.restarted = false;
       track.lastSent = now;
       return send(frame, frametime);
