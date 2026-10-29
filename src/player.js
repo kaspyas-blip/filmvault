@@ -91,8 +91,8 @@ function patchConnection(conn, isRestarting, videoBitrate) {
   const setPacketizer = conn.setPacketizer.bind(conn);
   let codec = null;
   const tracks = [
-    { send: 'sendVideoFrame', packetizer: '_videoPacketizer', lastSent: null, restarted: false, video: true },
-    { send: 'sendAudioFrame', packetizer: '_audioPacketizer', lastSent: null, restarted: false },
+    { send: 'sendVideoFrame', packetizer: '_videoPacketizer', lastSent: null, restarted: false, residual: 0, video: true },
+    { send: 'sendAudioFrame', packetizer: '_audioPacketizer', lastSent: null, restarted: false, residual: 0 },
   ];
   let keyframesToSkip = 0;
   conn.setPacketizer = videoCodec => {
@@ -172,7 +172,20 @@ function patchConnection(conn, isRestarting, videoBitrate) {
       if (track.video) watchPace(now, frametime, track.restarted);
       track.restarted = false;
       track.lastSent = now;
-      return send(frame, frametime);
+      const result = send(frame, frametime);
+      // The library advances the RTP clock by the rounded frame time: 3754 instead of
+      // 3753.75 ticks at 23.976 fps, so video ran 0.24 s an hour ahead of audio. The
+      // stream stays open across episodes, and after a few the sound slipped for good.
+      // The rounding error is carried and paid back.
+      const { rtpConfig } = conn[track.packetizer];
+      const exact = (frametime * rtpConfig.clockRate) / 1000;
+      track.residual += exact - Math.round(exact);
+      const whole = Math.trunc(track.residual);
+      if (whole) {
+        rtpConfig.timestamp += whole;
+        track.residual -= whole;
+      }
+      return result;
     };
   }
   return conn;
