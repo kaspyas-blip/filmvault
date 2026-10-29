@@ -2,6 +2,7 @@ import {
   ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, GatewayIntentBits,
   MessageFlags, SlashCommandBuilder, StringSelectMenuBuilder,
 } from 'discord.js';
+import { readFile, rm, stat } from 'node:fs/promises';
 import { config } from './config.js';
 import { keepHelpLast } from './help.js';
 import { addWatch, entryKey, history, recordWatch, removeWatch } from './history.js';
@@ -28,6 +29,8 @@ const GENRE_CACHE_MS = 10 * 60_000;
 const SLOW_LIST_MS = Number(process.env.SLOW_LIST_MS ?? 1500);
 // Played this close to the end counts as watched (credits).
 const WATCHED_TAIL = 0.92;
+const AUTOPLAY_FILE = 'data/autoplay.json';
+const AUTOPLAY_MAX_AGE_MS = 10 * 60_000;
 
 const commands = [
   new SlashCommandBuilder().setName('pust').setDescription('Pustí film nebo díl do kina')
@@ -878,6 +881,31 @@ export function startBot(player) {
     }
   }
 
+  /**
+   * For deploys during a film: data/autoplay.json ({ "itemId": "...", "by": "name" }),
+   * written just before a restart, starts that item again where it left off. One-shot,
+   * and ignored when older than AUTOPLAY_MAX_AGE_MS.
+   */
+  async function playAfterRestart() {
+    let request;
+    try {
+      const { mtimeMs } = await stat(AUTOPLAY_FILE);
+      request = Date.now() - mtimeMs < AUTOPLAY_MAX_AGE_MS ? JSON.parse(await readFile(AUTOPLAY_FILE, 'utf8')) : null;
+      await rm(AUTOPLAY_FILE, { force: true });
+    } catch (error) {
+      if (error.code !== 'ENOENT') console.error('Autoplay file unreadable:', error.message);
+      return;
+    }
+    if (!request?.itemId) return;
+    try {
+      const item = await getItem(request.itemId);
+      console.log(`Playing ${itemLabel(item)} again after restart`);
+      await beginPlayback(item, {}, request.by ?? 'restart', payload => textChannel().send(payload));
+    } catch (error) {
+      console.error('Autoplay after restart failed:', error);
+    }
+  }
+
   client.once('clientReady', async () => {
     console.log(`Control bot ready as ${client.user.tag}`);
     try {
@@ -893,6 +921,7 @@ export function startBot(player) {
       console.log(`Registered ${commands.length} slash commands in ${guild.name}; text #${text.name}, voice ${voice.name}`);
       const wishlistChannelId = await startWishlist(guild);
       await keepHelpLast(client, text, voice.id, wishlistChannelId).catch(error => console.error('Help message failed:', error.message));
+      await playAfterRestart();
     } catch (error) {
       console.error('Startup failed:', error);
       process.exit(1);

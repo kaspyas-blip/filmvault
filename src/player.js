@@ -15,10 +15,8 @@ const JOIN_TIMEOUT_MS = 20_000;
 const HARDWARE_RETRY_WINDOW_MS = 15_000;
 // ffmpeg forces a keyframe every second; sending starts at the second one after a restart.
 const RESTART_SKIP_KEYFRAMES = 2;
-// Receivers buffer at least MIN and may buffer up to MAX (10 ms units), so resent
-// packets arrive in time. A max alone did not help with ~2 % loss on the uplink:
-// Discord kept its buffer short, so the min forces 2 s.
-const PLAYOUT_DELAY_MIN = 200;
+// Receivers may buffer up to this much (10 ms units) so resent packets arrive in time.
+// Viewers' stats show Discord does not pass a minimum on (Minimum Playout Delay 0 ms).
 const PLAYOUT_DELAY_MAX = 600;
 // Logs how evenly video frames go out, once a minute; a gap is a frame this late.
 const PACE_REPORT_MS = 60_000;
@@ -54,7 +52,7 @@ function isH264Keyframe(frame) {
  * The library caps the receivers' playout delay at 100 ms (video) and 10 ms
  * (audio). A lost packet is resent on NACK, but the resend arrives after that,
  * so each loss froze the picture until the next keyframe (~0.5 s on average).
- * Watching a film can afford a couple of seconds of extra latency instead.
+ * Watching a film could afford more, but Discord passes on only the maximum.
  */
 function patchConnection(conn, isRestarting) {
   const setPacketizer = conn.setPacketizer.bind(conn);
@@ -70,10 +68,8 @@ function patchConnection(conn, isRestarting) {
     if (codec === videoCodec) return;
     codec = videoCodec;
     setPacketizer(videoCodec);
-    for (const track of tracks) {
-      conn[track.packetizer].rtpConfig.playoutDelayMin = PLAYOUT_DELAY_MIN;
-      conn[track.packetizer].rtpConfig.playoutDelayMax = PLAYOUT_DELAY_MAX;
-    }
+    for (const track of tracks) conn[track.packetizer].rtpConfig.playoutDelayMax = PLAYOUT_DELAY_MAX;
+    conn._videoTrack?.onMessage(countFeedback);
   };
   const media = conn.mediaConnection;
   for (const name of ['setSpeaking', 'setVideoAttributes']) {
@@ -83,6 +79,33 @@ function patchConnection(conn, isRestarting) {
   // Sending side of a stutter: video frames handed over late (ffmpeg not keeping up)
   // show up here as gaps and as falling behind the film's own clock.
   const pace = { start: 0, media: 0, last: 0, frames: 0, gaps: 0, maxGap: 0, maxBehind: 0, reported: 0 };
+  // What Discord asks of the sender: resends (NACK, packets lost on our uplink),
+  // keyframes (PLI/FIR) and the bitrate it estimates it can carry (REMB).
+  const feedback = { packets: 0, nacked: 0, keyframes: 0, remb: null };
+  function countFeedback(message) {
+    if (!Buffer.isBuffer(message)) return;
+    for (let at = 0; at + 4 <= message.length;) {
+      feedback.packets++;
+      const format = message[at] & 0x1f;
+      const type = message[at + 1];
+      const end = at + (message.readUInt16BE(at + 2) + 1) * 4;
+      if (type === 205 && format === 1) {
+        for (let fci = at + 12; fci + 4 <= end; fci += 4) {
+          let lostAfter = message.readUInt16BE(fci + 2);
+          feedback.nacked++;
+          for (; lostAfter; lostAfter &= lostAfter - 1) feedback.nacked++;
+        }
+      } else if (type === 206 && (format === 1 || format === 4)) {
+        feedback.keyframes++;
+      } else if (type === 206 && format === 15 && end <= message.length && message.toString('ascii', at + 12, at + 16) === 'REMB') {
+        const exponent = message[at + 17] >> 2;
+        const mantissa = ((message[at + 17] & 3) << 16) | message.readUInt16BE(at + 18);
+        feedback.remb = mantissa * 2 ** exponent;
+      }
+      if (end <= at) break;
+      at = end;
+    }
+  }
   function watchPace(now, frametime, restarted) {
     if (restarted || !pace.start) Object.assign(pace, { start: now, media: 0, last: now, reported: now });
     const gap = now - pace.last;
@@ -93,7 +116,10 @@ function patchConnection(conn, isRestarting) {
     pace.maxGap = Math.max(pace.maxGap, gap);
     pace.maxBehind = Math.max(pace.maxBehind, now - pace.start - pace.media);
     if (now - pace.reported < PACE_REPORT_MS) return;
-    const line = `Video pace: ${pace.frames} frames, ${pace.gaps} gaps over ${PACE_GAP_MS} ms, longest ${Math.round(pace.maxGap)} ms, behind by up to ${Math.round(pace.maxBehind)} ms`;
+    const line = `Video pace: ${pace.frames} frames, ${pace.gaps} gaps over ${PACE_GAP_MS} ms, longest ${Math.round(pace.maxGap)} ms, behind by up to ${Math.round(pace.maxBehind)} ms; `
+      + `${feedback.packets} RTCP packets in: Discord asked to resend ${feedback.nacked} packets, for ${feedback.keyframes} keyframes`
+      + (feedback.remb ? `, estimates ${Math.round(feedback.remb / 1000)} kbit/s` : '');
+    Object.assign(feedback, { packets: 0, nacked: 0, keyframes: 0, remb: null });
     (pace.gaps ? console.warn : console.log)(line);
     Object.assign(pace, { frames: 0, gaps: 0, maxGap: 0, maxBehind: 0, reported: now });
   }

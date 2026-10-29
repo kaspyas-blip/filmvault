@@ -8,7 +8,8 @@ const ENCODER_OPTIONS = {
 };
 
 // Codecs the UHD 630 can decode; anything else (AV1) goes to the CPU.
-const HW_DECODABLE = new Set(['h264', 'hevc', 'mpeg2video', 'vc1', 'vp9']);
+const KEYFRAME_SECONDS = 0.5;
+const HW_DECODABLE =new Set(['h264', 'hevc', 'mpeg2video', 'vc1', 'vp9']);
 
 // Jellyfin VideoRangeType -> input transfer for tone mapping. Pure Dolby Vision
 // (profile 5) has no HDR10 base layer and cannot be mapped this way.
@@ -75,7 +76,9 @@ export function buildFfmpegArgs({
     '-bufsize:v', `${Math.round(bitrate / 2)}k`,
     '-bf', '0',
     '-g', String(config.fps * 2),
-    '-force_key_frames', 'expr:gte(t,n_forced*1)',
+    // Discord does not resend lost packets, and viewers' video stands still from a loss
+    // to the next keyframe; twice a second keeps those freezes short.
+    '-force_key_frames', `expr:gte(t,n_forced*${KEYFRAME_SECONDS})`,
     '-ac', '2', '-lfe_mix_level', '1', '-ar', '48000',
     '-c:a', 'libopus', '-b:a', `${config.audioBitrate}k`,
     '-f', 'nut', 'pipe:1',
