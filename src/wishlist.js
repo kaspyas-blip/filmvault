@@ -28,15 +28,22 @@ const IMPORT_MESSAGES = 200;
 const DESCRIPTION_LIMIT = 4000;
 const DICE_MEMORY = 20;
 const NICKNAME_CACHE_MS = 10 * 60_000;
+// Table columns: long titles and nicknames are cut so a row fits the embed width.
+const TITLE_WIDTH = 26;
+const NAME_WIDTH = 10;
 
 
 function formatDate(ms) {
   return new Date(ms).toLocaleDateString('cs-CZ', { timeZone: 'Europe/Prague', day: 'numeric', month: 'numeric', year: 'numeric' });
 }
 
-/** "28. 10. 21:30" */
+/** "28.10. 21:30", always 12 characters for the table. */
 function formatAdded(ms) {
-  return new Date(ms).toLocaleString('cs-CZ', { timeZone: 'Europe/Prague', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
+  if (!ms) return '';
+  const part = Object.fromEntries(new Intl.DateTimeFormat('cs-CZ', {
+    timeZone: 'Europe/Prague', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(ms)).map(p => [p.type, p.value]));
+  return `${part.day}.${part.month}. ${part.hour}:${part.minute}`;
 }
 
 const byTitle = (a, b) => a.film.title.localeCompare(b.film.title, 'cs') || (a.film.year ?? 0) - (b.film.year ?? 0);
@@ -218,37 +225,47 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
 
   const playable = row => !!(row.item || row.elsewhere);
 
-  function filmLine({ film, item, elsewhere, started, by }) {
-    const mark = item ? (started ? '⏸' : '✅') : elsewhere ? '📺' : '❌';
-    const link = imdbUrl(film.imdbId) ?? tmdbUrl(film.tmdbId);
-    const parts = [`${mark} [${filmLabel(film)}](${link})`];
-    if (film.rating) parts.push(`⭐ ${film.rating}`);
-    if (started) parts.push(`skončili jste v ${formatTime(started)}`);
-    else if (elsewhere) parts.push(elsewhereText(elsewhere));
-    else if (!item) parts.push('nemáme');
-    if (by) parts.push(by);
-    if (film.addedAt) parts.push(formatAdded(film.addedAt));
-    return parts.join(' · ');
+  function mark({ item, elsewhere, started }) {
+    return item ? (started ? '⏸️' : '✅') : elsewhere ? '📺' : '❌';
   }
 
+  /** Cut or pad to a fixed width, so the columns line up in a code block. */
+  function cell(text, width) {
+    const chars = [...(text ?? '').normalize('NFC')];
+    return chars.length > width ? `${chars.slice(0, width - 1).join('')}…` : chars.join('') + ' '.repeat(width - chars.length);
+  }
+
+  /**
+   * The list is a monospaced table (Discord cannot align columns otherwise), so
+   * titles are not links there; the cards and the dice link to IMDb. Links for
+   * films "elsewhere" go under the table.
+   */
   function listPayload(rows) {
     const sorted = [...rows].sort(byTitle);
+    const titleWidth = Math.min(TITLE_WIDTH, Math.max(4, ...sorted.map(r => [...filmLabel(r.film)].length)));
+    const nameWidth = Math.min(NAME_WIDTH, Math.max(6, ...sorted.map(r => [...(r.by ?? '')].length)));
+    const header = `   ${cell('Film', titleWidth)} IMDb ${cell('Přidal', nameWidth)} Kdy`;
     const lines = [];
-    let length = 0;
+    let length = header.length + 8;
     for (const row of sorted) {
-      const line = filmLine(row);
-      if (length + line.length + 1 > DESCRIPTION_LIMIT) {
+      const rating = row.film.rating ? row.film.rating.toFixed(1) : '–';
+      const line = `${mark(row)} ${cell(filmLabel(row.film), titleWidth)} ${rating.padStart(4)} ${cell(row.by, nameWidth)} ${formatAdded(row.film.addedAt)}`;
+      if (length + line.length + 1 > DESCRIPTION_LIMIT - 300) {
         lines.push(`…a dalších ${sorted.length - lines.length}`);
         break;
       }
       lines.push(line);
       length += line.length + 1;
     }
+    const links = sorted.filter(r => r.elsewhere?.url).map(r => `📺 ${filmLabel(r.film)}: ${elsewhereText(r.elsewhere)}`);
+    const description = lines.length
+      ? ['```', header, ...lines, '```', ...links].join('\n')
+      : 'Seznam je prázdný. Napiš sem název filmu a přidám ho.';
     const available = rows.filter(playable).length;
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setTitle(`${LIST_TITLE} (${rows.length})`)
-      .setDescription(lines.join('\n') || 'Seznam je prázdný. Napiš sem název filmu a přidám ho.')
+      .setDescription(description)
       .setFooter({ text: `✅ máme · 📺 máme jinde · ❌ nemáme · ⏸ rozkoukané · Přidáš ho napsáním názvu do této roomky` });
     const components = [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('fw:roll').setLabel('🎲 Hodit kostkou').setStyle(ButtonStyle.Primary).setDisabled(!available),
