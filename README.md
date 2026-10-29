@@ -13,6 +13,7 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 - **Čeština napřed** – bez výběru vezme český dabing (a české vynucené titulky), jinak české titulky
 - **Přehled** – `/filmy` a seznam dílů označí, co jste viděli (✅) a co máte rozkoukané (⏸)
 - **Historie** – `/videli` ukáže, co běželo, kdo to pustil a kde jste skončili; přes `/zapsat` jde přidat ručně a z nabídky odebrat
+- **Chceme vidět** – v roomce se seznamem stačí napsat název filmu; bot dohledá popis, plakát a hodnocení z IMDb, pozná, jestli film máte, a po zhlédnutí ho sám odebere. 🎲 vybere náhodně film, který jde hned pustit
 - **HDR filmy** se převádí na normální barvy (jinak by v Discordu byly vybledlé)
 - **Nápověda** se sama připne do textového kanálu
 
@@ -48,6 +49,7 @@ Ovládání uživatelského účtu programem (selfbot) **porušuje podmínky pou
 - **[ffmpeg](https://ffmpeg.org/download.html)** – na Windows třeba build od [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (verze *full*, obsahuje i `zscale` pro HDR)
 - **Discord server**, kde máš právo přidávat boty
 - **Druhý Discord účet** pro streamování
+- Volitelně **API klíče z [TMDB](https://www.themoviedb.org/settings/api) a [OMDb](https://www.omdbapi.com/apikey.aspx)** (zdarma) pro roomku „Chceme vidět“
 
 ## Instalace krok za krokem
 
@@ -60,9 +62,10 @@ Ovládání uživatelského účtu programem (selfbot) **porušuje podmínky pou
 
 1. Otevři [Discord Developer Portal](https://discord.com/developers/applications) a klikni na **New Application**.
 2. V sekci **Bot** klikni na **Reset Token** a token si zkopíruj. Půjde do `BOT_TOKEN`. Nikomu ho neukazuj.
-3. V sekci **OAuth2 → URL Generator** zaškrtni scopes `bot` a `applications.commands` a oprávnění:
+3. Ve stejné sekci **Bot** zapni pod *Privileged Gateway Intents* volbu **Message Content Intent** a ulož. Bez ní bot nevidí, co lidi píšou do roomky „Chceme vidět“.
+4. V sekci **OAuth2 → URL Generator** zaškrtni scopes `bot` a `applications.commands` a oprávnění:
    *View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Pin Messages*.
-4. Vygenerovaný odkaz otevři a bota přidej na svůj server.
+5. Vygenerovaný odkaz otevři a bota přidej na svůj server.
 
 ### 3. Streamovací účet
 
@@ -71,7 +74,7 @@ Ovládání uživatelského účtu programem (selfbot) **porušuje podmínky pou
 
 ### 4. Kanály na serveru
 
-Vytvoř textový kanál pro příkazy (výchozí název `filmsearch`) a hlasový kanál pro promítání (výchozí `film`). Pokud chceš, aby kino ovládali jen někteří, vytvoř roli (třeba `kino`) a dej ji jim.
+Vytvoř textový kanál pro příkazy (výchozí název `filmsearch`), hlasový kanál pro promítání (výchozí `film`) a případně textový kanál pro seznam „Chceme vidět“ (výchozí `filmy`). Pokud chceš, aby kino ovládali jen někteří, vytvoř roli (třeba `kino`) a dej ji jim.
 
 ### 5. Stažení a instalace bota
 
@@ -105,6 +108,9 @@ Zkopíruj `.env.example` jako `.env` a vyplň ho:
 | `HW_DECODE` | `d3d11va` (Windows), `cuda` (NVIDIA), `vaapi` (Linux), `0` = procesor |
 | `VIDEO_HEIGHT`, `VIDEO_FPS` | bez Discord Nitra nejvýš `720` a `30` |
 | `VIDEO_BITRATE` | datový tok videa v kb/s, `2500` je dobrý kompromis |
+| `WISHLIST_CHANNEL` | roomka se seznamem „Chceme vidět“ (výchozí `filmy`) |
+| `TMDB_API_KEY` | klíč z [TMDB](https://www.themoviedb.org/settings/api) – bez něj roomka se seznamem nefunguje |
+| `OMDB_API_KEY` | klíč z [OMDb](https://www.omdbapi.com/apikey.aspx) – hodnocení přímo z IMDb (nepovinné) |
 | `ALLOWED_ROLE_ID` | ID nebo název role, která smí ovládat kino (prázdné = všichni) |
 
 ID kanálu, serveru nebo role zkopíruješ, když v Discordu zapneš **Nastavení → Pokročilé → Režim vývojáře** a klikneš na kanál, server nebo roli pravým tlačítkem → **Kopírovat ID**.
@@ -144,6 +150,15 @@ Na Linuxu použij třeba službu systemd nebo `pm2`.
 
 Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +10 min · stop**. Když všichni odejdou z hovoru, kino po 2 minutách přestane vysílat, bez přehrávání se po 5 minutách odpojí.
 
+## Roomka „Chceme vidět“
+
+- Napiš do roomky název filmu (klidně víc filmů, každý na nový řádek, i bez diakritiky). Bot odpoví kartičkou s popisem, plakátem, hodnocením, délkou, režisérem a trailerem.
+- Když název sedí na víc filmů („Batman“), nabídne výběr. Rok upřesní hledání: `Duna 1984`.
+- Když nic nenajde, dá na zprávu jen 🤷, takže se v roomce dá normálně povídat.
+- Seznam drží bot vždy jako poslední zprávu: ✅ máme v Jellyfinu, ❌ nemáme, ⏸ rozkoukané. Po dokoukání v kině film sám zmizí (je pak v `/videli`).
+- **🎲 Hodit kostkou** vybere náhodně film, který máte, a nabídne ho rovnou pustit.
+- Při prvním spuštění bot projde starší zprávy v roomce a filmy z nich převezme.
+
 ## Když něco nejde
 
 | Problém | Řešení |
@@ -154,6 +169,7 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
 | Film se nespustí, chyba ffmpeg | ověř `FFMPEG_PATH`; bez Intel grafiky nastav `VIDEO_ENCODER=libx264` a `HW_DECODE=0` |
 | Obraz se trhá, zvuk jde | počítač nestíhá: sniž `VIDEO_BITRATE` nebo `VIDEO_HEIGHT`, nebo zapni kódování na grafice |
 | HDR film je vybledlý | ffmpeg nemá filtr `zscale`, stáhni „full“ build |
+| Bot nereaguje na názvy v roomce se seznamem | zapni *Message Content Intent* (krok 2) a vyplň `TMDB_API_KEY` |
 | Kino navazuje od divného místa | nastav `JELLYFIN_USER`, jinak sdílí pozice s administrátorem |
 
 Log běžícího bota je v `runtime.log` (při automatickém spouštění), jinak v konzoli.

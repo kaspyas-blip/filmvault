@@ -34,6 +34,10 @@ export const config = {
   // ffmpeg -hwaccel method, or empty / 0 for software decoding
   hwDecode: ['', '0'].includes(process.env.HW_DECODE?.trim() ?? '') ? null : process.env.HW_DECODE.trim(),
   idleLeaveMinutes: number('IDLE_LEAVE_MINUTES', 5),
+  // Wishlist room ("what we want to watch"); needs a TMDB key, OMDb adds the IMDb rating
+  wishlistChannel: process.env.WISHLIST_CHANNEL?.trim() || 'filmy',
+  tmdbApiKey: process.env.TMDB_API_KEY?.trim() || null,
+  omdbApiKey: process.env.OMDB_API_KEY?.trim() || null,
   // Role ID or exact role name (case-insensitive)
   allowedRole: process.env.ALLOWED_ROLE_ID?.trim() || null,
 };

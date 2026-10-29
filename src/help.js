@@ -4,7 +4,7 @@ import { config } from './config.js';
 
 const HELP_TITLE = '🎬 Kino FilmVault – jak na to';
 
-function helpEmbed(voiceChannelId) {
+function helpEmbed(voiceChannelId, wishlistChannelId) {
   const role = config.allowedRole && !/^\d+$/.test(config.allowedRole) ? `roli **${config.allowedRole}**` : 'oprávněnou roli';
   return new EmbedBuilder()
     .setColor(0x5865f2)
@@ -22,7 +22,8 @@ function helpEmbed(voiceChannelId) {
           '`/serialy` – vybereš seriál → sérii → díl.',
           '`/videli` – co jsme viděli, kdy, kdo to pustil a kde jsme skončili. Nedokoukané jde pustit dál, omylem zapsané odebrat z nabídky 🗑.',
           '`/zapsat film` – ručně zapíše do historie, co jste viděli jinde. Volitelně `kdy` (`včera`, `28.10. 21:30`) a `skoncili` (`1:20:00`, jinak dokoukáno).',
-        ].join('\n'),
+          wishlistChannelId && `**Chceme vidět** – napiš název filmu do <#${wishlistChannelId}> a bot ho přidá na seznam s info z IMDb. 🎲 vybere náhodně film, který máme.`,
+        ].filter(Boolean).join('\n'),
       },
       {
         name: '⏯️ Během přehrávání',
@@ -55,8 +56,9 @@ function helpEmbed(voiceChannelId) {
 }
 
 /** Posts the help message into the text channel and pins it; edits it in place when the text changes. */
-export async function ensureHelpPinned(client, channel, voiceChannelId) {
-  const embed = helpEmbed(voiceChannelId);
+/** wishlistChannelId: the "want to watch" room, or null when it is off. */
+export async function ensureHelpPinned(client, channel, voiceChannelId, wishlistChannelId = null) {
+  const embed = helpEmbed(voiceChannelId, wishlistChannelId);
   const version = createHash('sha1').update(JSON.stringify(embed.toJSON())).digest('hex').slice(0, 8);
   embed.setFooter({ text: `Návod se aktualizuje sám · ${version}` });
 

@@ -9,8 +9,10 @@ import {
   SORTS, audioTracks, defaultTracks, downloadPoster, durationSeconds, getItem, isCzech, itemLabel, listEpisodes, listGenres,
   listLibrary, listSeasons, mediaSource, nextEpisode, resumeSeconds, saveProgress, searchItems, subtitleTracks, trackLabel,
 } from './jellyfin.js';
+import { movieInfoEnabled } from './movieinfo.js';
 import { UserError } from './player.js';
 import { formatTime, parseTime, parseWhen } from './time.js';
+import { createWishlist } from './wishlist.js';
 
 const ALONE_LEAVE_MS = 2 * 60_000;
 const ITEM_CACHE_MS = 60_000;
@@ -66,7 +68,11 @@ const commands = [
 ].map(c => c.toJSON());
 
 export function startBot(player) {
-  const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
+  // Message content is for the wishlist room, where people just write movie titles.
+  const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  });
+  let wishlist = null;
   const itemCache = new Map();
   const czechListCache = new Map();
   let genreCache = null;
@@ -358,6 +364,7 @@ export function startBot(player) {
         ? saveProgress(item.Id, { seconds: position, played: !!watched }).catch(error => console.error('Saving progress failed:', error.message))
         : null,
     ]);
+    wishlist?.refresh();
   }
 
   async function genres() {
@@ -579,6 +586,7 @@ export function startBot(player) {
       if (prefix === 'fh' && action === 'del') {
         await interaction.deferUpdate();
         const removed = await removeWatch(value);
+        wishlist?.refresh();
         const notice = removed
           ? `🗑 Odebráno z historie: **${removed.label}** (${formatDate(removed.endedAt)})`
           : 'Tenhle záznam už v historii není.';
@@ -650,6 +658,7 @@ export function startBot(player) {
     const finished = !parsed || (!!duration && parsed.seconds >= duration * WATCHED_TAIL);
     const position = finished ? duration ?? 0 : parsed.seconds;
     await addWatch({ id: item.Id, label: itemLabel(item), by: userName(interaction), endedAt, position, duration, finished });
+    wishlist?.refresh();
     const state = finished ? 'jako dokoukané' : `se skončením v ${formatTime(position)}`;
     return interaction.editReply(`✍️ Zapsáno do historie: **${itemLabel(item)}**, ${formatDate(endedAt)}, ${state}. Odebrat jde v /videli.`);
   }
@@ -797,6 +806,10 @@ export function startBot(player) {
         return interaction.respond([]).catch(() => {});
       });
     }
+    if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('fw:')) {
+      if (!wishlist) return interaction.reply({ content: 'Seznam filmů teď nefunguje.', flags: MessageFlags.Ephemeral });
+      return wishlist.handleInteraction(interaction).catch(error => replyError(interaction, error));
+    }
     const isList = (interaction.isButton() || interaction.isStringSelectMenu()) && /^f[lsh]:/.test(interaction.customId);
     const isNextUp = interaction.isButton() && interaction.customId.startsWith('fn:');
     if (!interaction.isChatInputCommand() && !isList && !isNextUp && !(interaction.isButton() && interaction.customId.startsWith('fv:'))) return;
@@ -839,6 +852,32 @@ export function startBot(player) {
     }
   });
 
+  // Optional: without a TMDB key or the room, the rest of the cinema works as before.
+  // Returns the room's channel ID, or null when the wishlist is off.
+  async function startWishlist(guild) {
+    if (!movieInfoEnabled()) {
+      console.log('Wishlist off: no TMDB_API_KEY');
+      return null;
+    }
+    try {
+      const room = findChannel(guild, config.wishlistChannel, false);
+      wishlist = createWishlist({
+        client,
+        channelId: room.id,
+        allowed,
+        userName,
+        play: (item, requestedBy) => beginPlayback(item, {}, requestedBy, payload => textChannel().send(payload)),
+      });
+      await wishlist.start();
+      console.log(`Wishlist running in #${room.name}`);
+      return room.id;
+    } catch (error) {
+      wishlist = null;
+      console.error('Wishlist failed to start:', error);
+      return null;
+    }
+  }
+
   client.once('clientReady', async () => {
     console.log(`Control bot ready as ${client.user.tag}`);
     try {
@@ -852,7 +891,8 @@ export function startBot(player) {
       player.guildId = guild.id;
       await guild.commands.set(commands);
       console.log(`Registered ${commands.length} slash commands in ${guild.name}; text #${text.name}, voice ${voice.name}`);
-      await ensureHelpPinned(client, text, voice.id).catch(error => console.error('Help message failed:', error.message));
+      const wishlistChannelId = await startWishlist(guild);
+      await ensureHelpPinned(client, text, voice.id, wishlistChannelId).catch(error => console.error('Help message failed:', error.message));
     } catch (error) {
       console.error('Startup failed:', error);
       process.exit(1);
