@@ -22,6 +22,8 @@ const PLAYOUT_DELAY_MAX = 600;
 // Logs how evenly video frames go out, once a minute; a gap is a frame this late.
 const PACE_REPORT_MS = 60_000;
 const PACE_GAP_MS = 150;
+// Video goes out at most this many times the chosen bitrate (ffmpeg's maxrate is 1.4x).
+const SEND_RATE_FACTOR = 1.5;
 
 /**
  * libdatachannel hands incoming RTCP to a track by the SSRCs in the session
@@ -73,8 +75,15 @@ function isH264Keyframe(frame) {
  * (audio). A lost packet is resent on NACK, but the resend arrives after that,
  * so each loss froze the picture until the next keyframe (~0.5 s on average).
  * Watching a film could afford more, but Discord passes on only the maximum.
+ *
+ * The library paces video at 1.25x the last 250 ms, so a big frame raised the rate
+ * with it: 20 ms bursts reached 7 Mbit/s at 2.5 Mbit/s on average. The uplink drops
+ * what is over its limit, and lost packets sat mostly in those bursts (2.4 % of all).
+ * Pacing at a fixed rate from the chosen bitrate spreads them out.
+ * videoBitrate: () => kbit/s of the current quality.
  */
-function patchConnection(conn, isRestarting) {
+function patchConnection(conn, isRestarting, videoBitrate) {
+  conn._bitrateCalculator = { addSample: () => (videoBitrate() * 1000 * SEND_RATE_FACTOR) / 1.25 };
   const setPacketizer = conn.setPacketizer.bind(conn);
   let codec = null;
   const tracks = [
@@ -223,7 +232,11 @@ export class Player extends EventEmitter {
     const stop = this.streamer.stopStream.bind(this.streamer);
     this.streamer.createStream = async () => {
       const signal = this.session?.ac.signal ?? AbortSignal.abort();
-      this.liveConn ??= patchConnection(await create(), () => this.keepLive);
+      this.liveConn ??= patchConnection(
+        await create(),
+        () => this.keepLive,
+        () => (QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY]).bitrate,
+      );
       return sessionView(this.liveConn, signal);
     };
     this.streamer.stopStream = () => {
