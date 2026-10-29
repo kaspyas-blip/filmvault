@@ -12,6 +12,7 @@ import {
 } from './jellyfin.js';
 import { movieInfoEnabled } from './movieinfo.js';
 import { UserError } from './player.js';
+import { QUALITIES, loadQuality, qualityLabel, saveQuality } from './quality.js';
 import { formatTime, parseTime, parseWhen } from './time.js';
 import { createWishlist } from './wishlist.js';
 
@@ -47,6 +48,9 @@ const commands = [
     .addStringOption(o => o.setName('stopa').setDescription('Zvuková stopa').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('titulky').setDescription('Zapne, změní nebo vypne titulky')
     .addStringOption(o => o.setName('stopa').setDescription('Titulky').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('kvalita').setDescription('Změní kvalitu vysílání pro všechny (bez volby ukáže aktuální)')
+    .addStringOption(o => o.setName('uroven').setDescription('Nižší kvalita pomůže, když se obraz seká')
+      .addChoices(...Object.keys(QUALITIES).map(key => ({ name: qualityLabel(key), value: key })))),
   new SlashCommandBuilder().setName('filmy').setDescription('Vypíše filmy v Jellyfinu, volitelně s filtrem')
     .addStringOption(o => o.setName('zanr').setDescription('Jen tento žánr').setAutocomplete(true))
     .addStringOption(o => o.setName('rok').setDescription('Rok nebo rozsah, např. 2005 nebo 1990-1999'))
@@ -188,6 +192,7 @@ export function startBot(player) {
         { name: 'Čas', value: `${formatTime(player.position())} / ${formatTime(player.duration)}`, inline: true },
         { name: 'Zvuk', value: player.audioTrack ? trackLabel(player.audioTrack) : '—', inline: false },
         { name: 'Titulky', value: player.subtitleTrack ? trackLabel(player.subtitleTrack) : 'vypnuto', inline: false },
+        { name: 'Kvalita', value: qualityLabel(player.quality), inline: false },
       );
     if (item.Overview) embed.setDescription(item.Overview.length > 300 ? `${item.Overview.slice(0, 299)}…` : item.Overview);
     if (poster) embed.setThumbnail(poster);
@@ -649,6 +654,23 @@ export function startBot(player) {
     await interaction.editReply(`⏩ Posunuto na ${formatTime(player.position())}.`);
   }
 
+  /** Everyone watches the same stream, so a change is announced in the channel. */
+  async function handleQuality(interaction) {
+    const wanted = interaction.options.getString('uroven');
+    if (!wanted) {
+      return interaction.reply({ content: `📺 Kvalita: ${qualityLabel(player.quality)}`, flags: MessageFlags.Ephemeral });
+    }
+    if (wanted === player.quality) {
+      return interaction.reply({ content: `📺 Kvalita už je ${qualityLabel(wanted)}.`, flags: MessageFlags.Ephemeral });
+    }
+    await interaction.deferReply();
+    await player.setQuality(wanted);
+    await saveQuality(wanted).catch(error => console.error('Could not save quality setting:', error.message));
+    await refreshNowPlaying();
+    const note = player.active && !player.paused ? ' Obraz se na chvilku zastaví a naváže.' : '';
+    await interaction.editReply(`📺 Kvalita: **${qualityLabel(wanted)}** (${userName(interaction)}).${note}`);
+  }
+
   async function handleTrack(interaction, kind) {
     requireActive();
     const value = interaction.options.getString('stopa', true);
@@ -700,6 +722,8 @@ export function startBot(player) {
         return interaction.reply({ content: '▶ Pokračuje se.', flags: MessageFlags.Ephemeral });
       case 'posun':
         return handleSeek(interaction);
+      case 'kvalita':
+        return handleQuality(interaction);
       case 'zvuk':
         return handleTrack(interaction, 'audio');
       case 'titulky':
@@ -935,6 +959,7 @@ export function startBot(player) {
       voiceChannelId = voice.id;
       guildId = guild.id;
       player.guildId = guild.id;
+      player.quality = await loadQuality();
       await guild.commands.set(commands);
       console.log(`Registered ${commands.length} slash commands in ${guild.name}; text #${text.name}, voice ${voice.name}`);
       const wishlistChannelId = await startWishlist(guild);

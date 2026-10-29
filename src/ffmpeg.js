@@ -8,8 +8,25 @@ const ENCODER_OPTIONS = {
 };
 
 // Codecs the UHD 630 can decode; anything else (AV1) goes to the CPU.
-const KEYFRAME_SECONDS = 0.5;
-const HW_DECODABLE =new Set(['h264', 'hevc', 'mpeg2video', 'vc1', 'vp9']);
+const HW_DECODABLE = new Set(['h264', 'hevc', 'mpeg2video', 'vc1', 'vp9']);
+// NTSC rates as exact fractions, so frames are not dropped or repeated over time.
+const EXACT_RATES = [[24000 / 1001, '24000/1001'], [30000 / 1001, '30000/1001']];
+
+/**
+ * Sends a film at its own frame rate: 24 fps films sent at 30 repeated every
+ * fourth frame, and pans juddered. Faster sources (50/60 fps) are halved until
+ * they fit under the configured maximum.
+ * Returns { rate: ffmpeg fps value, fps: number }.
+ */
+export function outputRate(sourceFps) {
+  let fps = sourceFps > 0 ? sourceFps : config.fps;
+  while (fps > config.fps + 0.5) fps /= 2;
+  if (fps < 10) fps = config.fps;
+  const exact = EXACT_RATES.find(([value]) => Math.abs(value - fps) < 0.01);
+  if (exact) return { rate: exact[1], fps: exact[0] };
+  const rounded = Math.round(fps * 1000) / 1000;
+  return { rate: String(rounded), fps: rounded };
+}
 
 // Jellyfin VideoRangeType -> input transfer for tone mapping. Pure Dolby Vision
 // (profile 5) has no HDR10 base layer and cannot be mapped this way.
@@ -28,14 +45,18 @@ export function hdrTransfer(video) {
  *
  * subtitle: null | { kind: 'text', file } (relative .ass path) | { kind: 'image', index }
  * hdr: input transfer ('smpte2084' / 'arib-std-b67') to tone map to SDR, or null
+ * sourceFps: the film's frame rate (see outputRate)
+ * quality: { height, bitrate } (see quality.js)
  */
 export function buildFfmpegArgs({
   url, videoCodec = null, startSeconds = 0, audioIndex = null, subtitle = null, softwareFallback = false, hdr = null,
+  sourceFps = null, quality = { height: config.height, bitrate: config.bitrate },
 }) {
   const encoderName = softwareFallback ? 'libx264' : config.encoder;
   const encoder = ENCODER_OPTIONS[encoderName] ?? ENCODER_OPTIONS.libx264;
   const start = Math.max(0, Math.floor(startSeconds));
-  const bitrate = config.bitrate;
+  const { bitrate } = quality;
+  const { rate, fps } = outputRate(sourceFps);
 
   const args = ['-hide_banner', '-loglevel', 'error', '-nostats'];
   const codec = videoCodec?.toLowerCase();
@@ -50,12 +71,12 @@ export function buildFfmpegArgs({
 
   // Never upscale; keep width even for the encoder. HDR is tone mapped after
   // downscaling, where it is cheap enough for the CPU (it looks washed out otherwise).
-  let scale = `scale=w=-2:h='min(${config.height},ih)'`;
+  let scale = `scale=w=-2:h='min(${quality.height},ih)'`;
   if (hdr) {
     scale += `,zscale=tin=${hdr}:min=bt2020nc:pin=bt2020:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,`
       + 'tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv';
   }
-  const tail = `fps=${config.fps},format=${encoder.pixFmt}`;
+  const tail = `fps=${rate},format=${encoder.pixFmt}`;
   let graph;
   if (subtitle?.kind === 'image') {
     graph = `[0:v:0][0:${subtitle.index}]overlay=eof_action=pass,${scale},${tail}[v]`;
@@ -75,10 +96,8 @@ export function buildFfmpegArgs({
     '-maxrate:v', `${Math.round(bitrate * 1.4)}k`,
     '-bufsize:v', `${Math.round(bitrate / 2)}k`,
     '-bf', '0',
-    '-g', String(config.fps * 2),
-    // Discord does not resend lost packets, and viewers' video stands still from a loss
-    // to the next keyframe; twice a second keeps those freezes short.
-    '-force_key_frames', `expr:gte(t,n_forced*${KEYFRAME_SECONDS})`,
+    '-g', String(Math.round(fps * 2)),
+    '-force_key_frames', 'expr:gte(t,n_forced*1)',
     '-ac', '2', '-lfe_mix_level', '1', '-ar', '48000',
     '-c:a', 'libopus', '-b:a', `${config.audioBitrate}k`,
     '-f', 'nut', 'pipe:1',

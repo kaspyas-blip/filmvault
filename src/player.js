@@ -5,6 +5,7 @@ import { Client } from '@lng2004/discord.js-selfbot-v13';
 import { BaseMediaConnection, Streamer, playStream } from '@dank074/discord-video-stream';
 import { config } from './config.js';
 import { buildFfmpegArgs, hdrTransfer } from './ffmpeg.js';
+import { DEFAULT_QUALITY, QUALITIES } from './quality.js';
 import { raiseTimerResolution } from './timer.js';
 import {
   audioTracks, downloadSubtitle, durationSeconds, itemLabel, mediaSource, streamUrl, subtitleTracks,
@@ -204,6 +205,7 @@ export class Player extends EventEmitter {
     this.audioIndex = null;
     this.subtitleIndex = null;
     this.subtitle = null;
+    this.quality = DEFAULT_QUALITY;
     this.session = null;
     this.paused = false;
     this.pausedPosition = 0;
@@ -326,6 +328,17 @@ export class Player extends EventEmitter {
     });
   }
 
+  /** quality: a key of QUALITIES. Restarts the stream where it is, like a track change. */
+  setQuality(quality) {
+    return this.run(async () => {
+      this.quality = quality;
+      if (!this.item || this.paused) return;
+      const position = this.position();
+      this.endSession({ keepLive: true });
+      this.startSession(position);
+    });
+  }
+
   stop() {
     return this.run(async () => this.reset());
   }
@@ -382,6 +395,8 @@ export class Player extends EventEmitter {
       audioIndex: this.audioTrack?.Index ?? null,
       subtitle: this.subtitle,
       softwareFallback,
+      sourceFps: video?.RealFrameRate ?? video?.AverageFrameRate ?? null,
+      quality: QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY],
     });
     const ac = new AbortController();
     const ff = spawn(config.ffmpegPath, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });

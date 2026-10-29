@@ -14,6 +14,8 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 - **Přehled** – `/filmy` a seznam dílů označí, co jste viděli (✅) a co máte rozkoukané (⏸)
 - **Historie** – `/videli` ukáže, co běželo, kdo to pustil a kde jste skončili; přes `/zapsat` jde přidat ručně a z nabídky odebrat
 - **Chceme vidět** – v roomce se seznamem stačí napsat název filmu; bot dohledá popis, plakát a hodnocení z IMDb, pozná, jestli film máte, a po zhlédnutí ho sám odebere. 🎲 vybere náhodně film, který jde hned pustit
+- **Kvalita** – `/kvalita` přepne vysílání pro všechny na vysokou, střední nebo nízkou kvalitu, když linka nestíhá
+- **Plynulý pohyb** – film se vysílá ve své vlastní snímkové frekvenci (24 snímků za sekundu se nepřevádí na 30)
 - **HDR filmy** se převádí na normální barvy (jinak by v Discordu byly vybledlé)
 - **Nápověda** je v textovém kanálu vždy jako poslední zpráva
 
@@ -106,7 +108,7 @@ Zkopíruj `.env.example` jako `.env` a vyplň ho:
 | `FFMPEG_PATH` | cesta k ffmpeg, nebo jen `ffmpeg`, pokud je v PATH |
 | `VIDEO_ENCODER` | `h264_qsv` (Intel), `h264_nvenc` (NVIDIA), `libx264` (procesor) |
 | `HW_DECODE` | `d3d11va` (Windows), `cuda` (NVIDIA), `vaapi` (Linux), `0` = procesor |
-| `VIDEO_HEIGHT`, `VIDEO_FPS` | bez Discord Nitra nejvýš `720` a `30` |
+| `VIDEO_HEIGHT`, `VIDEO_FPS` | bez Discord Nitra nejvýš `720` a `30`; `VIDEO_FPS` je strop, film jde ve své frekvenci |
 | `VIDEO_BITRATE` | datový tok videa v kb/s, `2500` je dobrý kompromis |
 | `WISHLIST_CHANNEL` | roomka se seznamem „Chceme vidět“ (výchozí `filmy`) |
 | `TMDB_API_KEY` | klíč z [TMDB](https://www.themoviedb.org/settings/api) – bez něj roomka se seznamem nefunguje |
@@ -121,7 +123,7 @@ ID kanálu, serveru nebo role zkopíruješ, když v Discordu zapneš **Nastaven�
 npm start
 ```
 
-Když v konzoli uvidíš `Registered 13 slash commands`, je hotovo. Bot do textového kanálu sám pošle nápovědu a drží ji jako poslední zprávu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
+Když v konzoli uvidíš `Registered 14 slash commands`, je hotovo. Bot do textového kanálu sám pošle nápovědu a drží ji jako poslední zprávu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
 
 ### 8. Automatické spouštění (Windows)
 
@@ -141,6 +143,7 @@ Na Linuxu použij třeba službu systemd nebo `pm2`.
 | `/pauza`, `/pokracuj` | pozastaví / pustí dál |
 | `/posun cas` | `1:20:00` = na čas, `+5` / `-2` = o minuty, `+30s` = o sekundy |
 | `/zvuk stopa`, `/titulky stopa` | změní zvukovou stopu nebo titulky za běhu |
+| `/kvalita [uroven]` | kvalita vysílání pro všechny: vysoká (nastavení z `.env`), střední (60 % datového toku), nízká (480p, třetina toku); volba se pamatuje |
 | `/filmy [zanr] [rok] [cesky] [razeni] [strana]` | seznam filmů s filtry, film jde pustit z nabídky |
 | `/serialy [strana]` | seriál → série → díl |
 | `/videli [strana]` | historie kina, nedokoukané jde pustit dál, záznamy jde odebrat z nabídky 🗑 |
@@ -171,7 +174,7 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
 | Příkazy se v Discordu neukazují | bot nebyl pozván se scope `applications.commands`, nebo restartuj Discord (Ctrl+R) |
 | Film se nespustí, chyba ffmpeg | ověř `FFMPEG_PATH`; bez Intel grafiky nastav `VIDEO_ENCODER=libx264` a `HW_DECODE=0` |
 | Obraz se trhá, zvuk jde | počítač nestíhá: sniž `VIDEO_BITRATE` nebo `VIDEO_HEIGHT`, nebo zapni kódování na grafice |
-| Seká se, ve statistikách streamu je hodně *Packets Lost* / *NACK* | ztrácejí se pakety na lince: sniž `VIDEO_BITRATE` (třeba `2000`), zkus jiný region hlasového kanálu |
+| Seká se, ve statistikách streamu je hodně *Packets Lost* / *NACK* | ztrácejí se pakety na lince: přepni `/kvalita` na střední nebo nízkou, zkus jiný region hlasového kanálu |
 | HDR film je vybledlý | ffmpeg nemá filtr `zscale`, stáhni „full“ build |
 | Bot nereaguje na názvy v roomce se seznamem | zapni *Message Content Intent* (krok 2) a vyplň `TMDB_API_KEY` |
 | Kino navazuje od divného místa | nastav `JELLYFIN_USER`, jinak sdílí pozice s administrátorem |

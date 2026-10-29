@@ -31,6 +31,7 @@ function helpEmbed(voiceChannelId, wishlistChannelId) {
           '`/pauza`, `/pokracuj` – pozastaví / pustí dál',
           '`/posun cas` – `1:20:00` na čas, `+5` / `-2` o minuty, `+30s` o sekundy',
           '`/zvuk`, `/titulky` – změní zvukovou stopu nebo titulky (i vypnout)',
+          '`/kvalita` – kvalita vysílání pro všechny: vysoká, střední, nízká (když se obraz seká)',
           '`/hraje` – co hraje a v jakém čase',
           '`/stop` – zastaví · `/odejdi` – zastaví a kino odejde z hovoru',
           'Tlačítka pod zprávou: **−1 min · pauza · +1 min · +10 min · stop**',
