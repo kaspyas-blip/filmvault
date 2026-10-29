@@ -29,6 +29,7 @@ const GENRE_CACHE_MS = 10 * 60_000;
 const SLOW_LIST_MS = Number(process.env.SLOW_LIST_MS ?? 1500);
 // Played this close to the end counts as watched (credits).
 const WATCHED_TAIL = 0.92;
+const POSTER_FILE = 'poster.jpg';
 const AUTOPLAY_FILE = 'data/autoplay.json';
 const AUTOPLAY_MAX_AGE_MS = 10 * 60_000;
 
@@ -176,7 +177,7 @@ export function startBot(player) {
     return rows;
   }
 
-  /** poster: image URL for the thumbnail ('attachment://poster.jpg' on the first send). */
+  /** poster: image URL for the thumbnail, 'attachment://poster.jpg' for the uploaded one. */
   function nowPlayingEmbed({ poster = null } = {}) {
     const { item } = player;
     const embed = new EmbedBuilder()
@@ -206,21 +207,22 @@ export function startBot(player) {
   }
 
   /**
-   * Edits keep the poster inside the embed: they point the thumbnail at the URL
-   * Discord gave the uploaded poster and keep that attachment explicitly. With
-   * 'attachment://' again, and several clicks editing at once, the poster sometimes
-   * ended up as a separate image above the message. Edits run one at a time.
+   * Edits keep the poster inside the embed: the thumbnail refers to the uploaded
+   * file and the edit lists that attachment explicitly. Without it, and with several
+   * clicks editing at once, the poster sometimes ended up as a separate image above
+   * the message. (Pointing the thumbnail at the file's CDN URL dropped it entirely.)
+   * Edits run one at a time.
    */
   function refreshNowPlaying() {
     const current = nowPlaying;
     if (!current?.message) return Promise.resolve();
     current.editing = (current.editing ?? Promise.resolve()).then(async () => {
       if (nowPlaying !== current || !player.active) return;
-      const { message } = current;
-      await message.edit({
-        embeds: [nowPlayingEmbed({ poster: message.embeds[0]?.thumbnail?.url })],
+      const poster = current.message.attachments.find(a => a.name === POSTER_FILE);
+      await current.message.edit({
+        embeds: [nowPlayingEmbed({ poster: poster && `attachment://${POSTER_FILE}` })],
         components: controls(),
-        attachments: [...message.attachments.values()],
+        attachments: poster ? [poster] : [],
       }).catch(() => {});
     });
     return current.editing;
@@ -283,9 +285,9 @@ export function startBot(player) {
     const resumeNote = resumedFrom ? ` Navazuje od ${formatTime(resumedFrom)}, kde jste skončili.` : '';
     nowPlaying.message = await send({
       content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}`,
-      embeds: [nowPlayingEmbed({ poster: poster && 'attachment://poster.jpg' })],
+      embeds: [nowPlayingEmbed({ poster: poster && `attachment://${POSTER_FILE}` })],
       components: controls(),
-      files: poster ? [new AttachmentBuilder(poster, { name: 'poster.jpg' })] : [],
+      files: poster ? [new AttachmentBuilder(poster, { name: POSTER_FILE })] : [],
     });
     checkAlone();
   }
