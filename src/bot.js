@@ -23,7 +23,6 @@ const SUBTITLES_OFF = 'off';
 const LIST_PAGE_SIZE = 20;
 const EPISODE_PAGE_SIZE = 25;
 const HISTORY_PAGE_SIZE = 15;
-const NEXT_EPISODE_DELAY_MS = 15_000;
 const PROGRESS_SAVE_MS = 60_000;
 const CZECH_LIST_CACHE_MS = 5 * 60_000;
 const GENRE_CACHE_MS = 10 * 60_000;
@@ -85,7 +84,6 @@ export function startBot(player) {
   const czechListCache = new Map();
   let genreCache = null;
   let nowPlaying = null; // { message, requestedBy, resumedFrom }
-  let nextUp = null; // { message, item, tracks, timer }
   let lastTracks = null; // track languages of the item that just stopped, for the next episode
   let aloneTimer = null;
   let guildId = null;
@@ -177,7 +175,14 @@ export function startBot(player) {
       button('fwd600', '+10 min'),
       button('stop', '⏹ Stop', ButtonStyle.Danger),
     )];
-    if (nowPlaying?.resumedFrom) rows.push(new ActionRowBuilder().addComponents(button('restart', '⏮ Pustit od začátku')));
+    const extra = [];
+    if (nowPlaying?.resumedFrom) extra.push(button('restart', '⏮ Pustit od začátku'));
+    if (nowPlaying?.next) {
+      extra.push(nowPlaying.skipNext
+        ? button('next', '▶ Pak pustit další díl')
+        : button('nonext', '✖ Nepouštět další díl'));
+    }
+    if (extra.length) rows.push(new ActionRowBuilder().addComponents(...extra));
     return rows;
   }
 
@@ -196,6 +201,9 @@ export function startBot(player) {
       );
     if (item.Overview) embed.setDescription(item.Overview.length > 300 ? `${item.Overview.slice(0, 299)}…` : item.Overview);
     if (poster) embed.setThumbnail(poster);
+    if (nowPlaying?.next) {
+      embed.addFields({ name: 'Potom', value: nowPlaying.skipNext ? 'nic, další díl se nepustí' : itemLabel(nowPlaying.next), inline: false });
+    }
     if (nowPlaying?.requestedBy) embed.setFooter({ text: `Spustil(a): ${nowPlaying.requestedBy}` });
     return embed;
   }
@@ -271,12 +279,13 @@ export function startBot(player) {
    * default to Czech audio, else Czech subtitles (see defaultTracks).
    */
   async function beginPlayback(item, { startSeconds = null, zvuk = null, titulky = null, tracks = null } = {}, requestedBy, send) {
-    await cancelNextUp('Pustilo se něco jiného.');
     const source = mediaSource(item);
     const defaults = tracks ?? defaultTracks(source, zvuk && zvuk !== SUBTITLES_OFF ? Number(zvuk) : null);
     const resumedFrom = startSeconds === null ? resumeSeconds(item) : null;
     const previous = player.item;
+    const next = await findNextEpisode(item);
     await player.play({
+      countdown: next ? itemLabel(next) : null,
       item,
       channelId: voiceChannelId,
       startSeconds: resumedFrom ?? startSeconds ?? 0,
@@ -286,7 +295,7 @@ export function startBot(player) {
     if (previous) await retireNowPlaying(previous, 'Přepnuto na jiný film.');
 
     const poster = await downloadPoster(item);
-    nowPlaying = { message: null, requestedBy, resumedFrom, poster };
+    nowPlaying = { message: null, requestedBy, resumedFrom, poster, next, skipNext: false };
     const resumeNote = resumedFrom ? ` Navazuje od ${formatTime(resumedFrom)}, kde jste skončili.` : '';
     nowPlaying.message = await send({
       content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}`,
@@ -325,53 +334,33 @@ export function startBot(player) {
     return channel?.members?.filter(m => !m.user.bot && m.id !== streamerId).size ?? 0;
   }
 
-  async function offerNextEpisode(item) {
-    const next = await nextEpisode(item).catch(error => {
+  async function findNextEpisode(item) {
+    if (item.Type !== 'Episode') return null;
+    return nextEpisode(item).catch(error => {
       console.error('Next episode lookup failed:', error.message);
       return null;
     });
-    if (!next) return retireNowPlaying(item, '🎬 Dohráno.');
-    const message = nowPlaying?.message;
-    nowPlaying = null;
-    const seconds = NEXT_EPISODE_DELAY_MS / 1000;
-    const payload = {
-      content: '',
-      embeds: [endedEmbed(item, `🎬 Dohráno.\n\n▶ Další díl **${itemLabel(next)}** se pustí za ${seconds} s.`)],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('fn:now').setLabel('▶ Pustit hned').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('fn:cancel').setLabel('✖ Nepouštět').setStyle(ButtonStyle.Secondary),
-      )],
-      attachments: [],
-    };
-    const offer = message ? await message.edit(payload).catch(() => null) : await textChannel()?.send(payload).catch(() => null);
-    nextUp = {
-      message: offer,
-      item: next,
-      tracks: lastTracks,
-      timer: setTimeout(() => playNextUp('automaticky').catch(error => console.error('Next episode failed:', error)), NEXT_EPISODE_DELAY_MS),
-    };
   }
 
-  async function cancelNextUp(text) {
-    const pending = nextUp;
-    if (!pending) return;
-    nextUp = null;
-    clearTimeout(pending.timer);
-    await pending.message?.edit({ embeds: [endedEmbed(pending.item, text)], components: [] }).catch(() => {});
-  }
-
-  async function playNextUp(requestedBy) {
-    const pending = nextUp;
-    if (!pending || player.active) return;
-    if (!peopleInVoice()) return cancelNextUp('Nikdo není v hovoru, další díl se nepustil.');
-    nextUp = null;
-    clearTimeout(pending.timer);
-    await pending.message?.edit({ embeds: [endedEmbed(pending.item, '▶ Pouštím další díl.')], components: [] }).catch(() => {});
-    const item = await getItem(pending.item.Id);
+  /**
+   * An episode ended: the next one starts right away, in the Go Live stream the
+   * player kept open (the video showed a countdown for the last 30 s). Without a
+   * next one, or with nobody listening, the stream is closed.
+   */
+  async function continueWithNext(item) {
+    const current = nowPlaying;
+    const next = current?.skipNext ? null : current?.next;
+    if (!next || !peopleInVoice()) {
+      await player.closeLive();
+      return retireNowPlaying(item, next ? '🎬 Dohráno. Nikdo není v hovoru, další díl se nepustil.' : '🎬 Dohráno.');
+    }
+    await retireNowPlaying(item, `🎬 Dohráno. ▶ Pokračuje **${itemLabel(next)}**.`);
     const channel = textChannel();
     try {
-      await beginPlayback(item, { tracks: carryTracks(mediaSource(item), pending.tracks) }, requestedBy, payload => channel.send(payload));
+      const fresh = await getItem(next.Id);
+      await beginPlayback(fresh, { tracks: carryTracks(mediaSource(fresh), lastTracks) }, current.requestedBy, payload => channel.send(payload));
     } catch (error) {
+      await player.closeLive();
       await channel?.send(`Další díl se nepodařilo pustit: ${error.message}`).catch(() => {});
       throw error;
     }
@@ -753,7 +742,6 @@ export function startBot(player) {
       }
       case 'odejdi': {
         const item = player.item;
-        await cancelNextUp('Další díl se nepustí, kino odešlo z hovoru.');
         await player.leave();
         if (item) await retireNowPlaying(item, '⏹ Zastaveno, odpojeno z hovoru.');
         return interaction.reply({ content: '👋 Odpojeno.', flags: MessageFlags.Ephemeral });
@@ -775,6 +763,10 @@ export function startBot(player) {
     if (action === 'restart') {
       nowPlaying.resumedFrom = null;
       await player.seek(0);
+    } else if (action === 'nonext' || action === 'next') {
+      // The countdown is drawn into the video, so switching it restarts the stream.
+      nowPlaying.skipNext = action === 'nonext';
+      await player.setCountdown(nowPlaying.skipNext ? null : itemLabel(nowPlaying.next));
     } else if (action === 'toggle') await (player.paused ? player.resume() : player.pause());
     else if (action === 'back60') await seekBy(-60);
     else if (action === 'fwd60') await seekBy(60);
@@ -812,21 +804,11 @@ export function startBot(player) {
     }, ALONE_LEAVE_MS);
   }
 
-  async function handleNextUpButton(interaction) {
-    if (!nextUp || nextUp.message?.id !== interaction.message.id) {
-      return interaction.reply({ content: 'Tahle nabídka už neplatí.', flags: MessageFlags.Ephemeral });
-    }
-    await interaction.deferUpdate();
-    if (interaction.customId === 'fn:cancel') return cancelNextUp(`Další díl se nepustí (${userName(interaction)}).`);
-    return playNextUp(userName(interaction));
-  }
-
   player.on('stopped', event => {
     storeProgress(event, nowPlaying?.requestedBy).catch(error => console.error('Recording progress failed:', error));
   });
   player.on('ended', item => {
-    const offer = item.Type === 'Episode' ? offerNextEpisode(item) : retireNowPlaying(item, '🎬 Dohráno.');
-    offer.catch(error => console.error('Finishing playback failed:', error));
+    continueWithNext(item).catch(error => console.error('Finishing playback failed:', error));
   });
   player.on('failed', (item, message, position) =>
     retireNowPlaying(item, `⚠️ Přehrávání spadlo v čase ${formatTime(position)}: ${message}\nZkus znovu \`/pust\`, naváže od místa, kde to spadlo.`));
@@ -856,8 +838,7 @@ export function startBot(player) {
       return wishlist.handleInteraction(interaction).catch(error => replyError(interaction, error));
     }
     const isList = (interaction.isButton() || interaction.isStringSelectMenu()) && /^f[lsh]:/.test(interaction.customId);
-    const isNextUp = interaction.isButton() && interaction.customId.startsWith('fn:');
-    if (!interaction.isChatInputCommand() && !isList && !isNextUp && !(interaction.isButton() && interaction.customId.startsWith('fv:'))) return;
+    if (!interaction.isChatInputCommand() && !isList && !(interaction.isButton() && interaction.customId.startsWith('fv:'))) return;
     if (interaction.channelId !== textChannelId) {
       return interaction.reply({ content: `Kino se ovládá jen v <#${textChannelId}>.`, flags: MessageFlags.Ephemeral });
     }
@@ -882,7 +863,6 @@ export function startBot(player) {
     }
     try {
       if (isList) await handleListInteraction(interaction);
-      else if (isNextUp) await handleNextUpButton(interaction);
       else if (interaction.isButton()) await handleButton(interaction);
       else await handleCommand(interaction);
     } catch (error) {

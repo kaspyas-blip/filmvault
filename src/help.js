@@ -41,7 +41,7 @@ function helpEmbed(voiceChannelId, wishlistChannelId) {
         name: '✨ Samo od sebe',
         value: [
           '**Navazování** – `/pust` pokračuje tam, kde jste skončili; tlačítko *Pustit od začátku* to vrátí na začátek.',
-          '**Další díl** – po dohrání dílu se za 15 s pustí další (i do další série) se stejným jazykem. Jde to zrušit.',
+          '**Další díl** – posledních 30 s dílu běží v rohu odpočet a pak hned naváže další (i do další série) se stejným jazykem. Zrušit jde tlačítkem *Nepouštět další díl*.',
           '**Čeština** – bez výběru stopy se bere český dabing, a když není, české titulky.',
           '**Úklid** – když všichni odejdou z hovoru, kino po 2 min přestane vysílat; bez přehrávání odejde po 5 min.',
         ].join('\n'),

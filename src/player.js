@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { Client } from '@lng2004/discord.js-selfbot-v13';
 import { BaseMediaConnection, Streamer, playStream } from '@dank074/discord-video-stream';
@@ -12,6 +13,8 @@ import {
 } from './jellyfin.js';
 
 const SUBTITLE_FILE = 'tmp/subtitles.ass';
+const COUNTDOWN_FILE = 'tmp/countdown.txt';
+const COUNTDOWN_SECONDS = 30;
 const JOIN_TIMEOUT_MS = 20_000;
 const HARDWARE_RETRY_WINDOW_MS = 15_000;
 // ffmpeg forces a keyframe every second; sending starts at the second one after a restart.
@@ -216,6 +219,9 @@ export class Player extends EventEmitter {
     this.subtitleIndex = null;
     this.subtitle = null;
     this.quality = DEFAULT_QUALITY;
+    // Label of the episode that follows, or null. Shown as a countdown at the end,
+    // and keeps the Go Live stream open after the end so the next one follows on.
+    this.countdown = null;
     this.session = null;
     this.paused = false;
     this.pausedPosition = 0;
@@ -235,13 +241,13 @@ export class Player extends EventEmitter {
       const signal = this.session?.ac.signal ?? AbortSignal.abort();
       this.liveConn ??= patchConnection(
         await create(),
-        () => this.keepLive,
+        () => this.holdingLive,
         () => (QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY]).bitrate,
       );
       return sessionView(this.liveConn, signal);
     };
     this.streamer.stopStream = () => {
-      if (this.keepLive) return;
+      if (this.holdingLive) return;
       this.liveConn = null;
       stop();
     };
@@ -261,6 +267,11 @@ export class Player extends EventEmitter {
 
   get active() {
     return this.item !== null;
+  }
+
+  /** Go Live stays open across restarts and from an episode's end to the next one. */
+  get holdingLive() {
+    return this.keepLive || this.countdown !== null;
   }
 
   get duration() {
@@ -285,7 +296,8 @@ export class Player extends EventEmitter {
     return subtitleTracks(this.source).find(t => t.Index === this.subtitleIndex) ?? null;
   }
 
-  play({ item, channelId, startSeconds = 0, audioIndex = null, subtitleIndex = null }) {
+  /** countdown: label of the episode that follows (see this.countdown), or null. */
+  play({ item, channelId, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null }) {
     return this.run(async () => {
       const source = mediaSource(item);
       const subtitle = await this.prepareSubtitle(item, source, subtitleIndex);
@@ -293,7 +305,7 @@ export class Player extends EventEmitter {
       this.endSession({ keepLive: true });
       await this.ensureVoice(channelId);
       clearTimeout(this.idleTimer);
-      Object.assign(this, { item, source, audioIndex, subtitleIndex, subtitle, itemStartedAt: Date.now() });
+      Object.assign(this, { item, source, audioIndex, subtitleIndex, subtitle, countdown, itemStartedAt: Date.now() });
       this.startSession(this.clamp(startSeconds));
     });
   }
@@ -353,6 +365,25 @@ export class Player extends EventEmitter {
     });
   }
 
+  /** Drops (null) or sets the next episode; the countdown is in the video, so it restarts. */
+  setCountdown(countdown) {
+    return this.run(async () => {
+      this.countdown = countdown;
+      if (!this.item || this.paused) return;
+      const position = this.position();
+      this.endSession({ keepLive: true });
+      this.startSession(position);
+    });
+  }
+
+  /** Ends the Go Live stream kept open after an episode when no next one follows. */
+  closeLive() {
+    return this.run(async () => {
+      this.countdown = null;
+      if (!this.item) this.streamer.stopStream();
+    });
+  }
+
   stop() {
     return this.run(async () => this.reset());
   }
@@ -399,6 +430,20 @@ export class Player extends EventEmitter {
     this.channelId = channelId;
   }
 
+  /**
+   * The "next episode in N s" text for ffmpeg's drawtext, for the last
+   * COUNTDOWN_SECONDS of the item. ffmpeg's clock starts at 0 at startSeconds.
+   * Returns { file, from } or null.
+   */
+  prepareCountdown(startSeconds) {
+    if (!this.countdown || !this.duration) return null;
+    const left = this.duration - startSeconds;
+    const label = this.countdown.replace(/[%\\]/g, '');
+    mkdirSync('tmp', { recursive: true });
+    writeFileSync(COUNTDOWN_FILE, `Další díl za %{eif:max(1,ceil(${left.toFixed(2)}-t)):d} s\n${label}`);
+    return { file: COUNTDOWN_FILE, from: Math.max(0, left - COUNTDOWN_SECONDS) };
+  }
+
   startSession(startSeconds, { softwareFallback = false } = {}) {
     const video = this.source.MediaStreams.find(s => s.Type === 'Video');
     const args = buildFfmpegArgs({
@@ -411,6 +456,7 @@ export class Player extends EventEmitter {
       softwareFallback,
       sourceFps: video?.RealFrameRate ?? video?.AverageFrameRate ?? null,
       quality: QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY],
+      countdown: this.prepareCountdown(startSeconds),
     });
     const ac = new AbortController();
     const ff = spawn(config.ffmpegPath, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -495,7 +541,9 @@ export class Player extends EventEmitter {
     });
   }
 
+  /** After a finished episode with a next one (countdown set) the stream stays open. */
   reset({ finished = false } = {}) {
+    if (!finished) this.countdown = null;
     this.emitStopped(finished);
     this.endSession({ keepLive: false });
     this.streamer.stopStream();

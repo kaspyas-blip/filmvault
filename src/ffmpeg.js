@@ -9,6 +9,8 @@ const ENCODER_OPTIONS = {
 
 // Codecs the UHD 630 can decode; anything else (AV1) goes to the CPU.
 const HW_DECODABLE = new Set(['h264', 'hevc', 'mpeg2video', 'vc1', 'vp9']);
+// Font for the next-episode countdown (colon escaped for the filter graph); elsewhere fontconfig picks one.
+const FONT = process.platform === 'win32' ? 'C\\:/Windows/Fonts/segoeuib.ttf' : null;
 // NTSC rates as exact fractions, so frames are not dropped or repeated over time.
 const EXACT_RATES = [[24000 / 1001, '24000/1001'], [30000 / 1001, '30000/1001']];
 
@@ -47,10 +49,11 @@ export function hdrTransfer(video) {
  * hdr: input transfer ('smpte2084' / 'arib-std-b67') to tone map to SDR, or null
  * sourceFps: the film's frame rate (see outputRate)
  * quality: { height, bitrate } (see quality.js)
+ * countdown: { file, from } – drawtext text file shown from `from` seconds on, or null
  */
 export function buildFfmpegArgs({
   url, videoCodec = null, startSeconds = 0, audioIndex = null, subtitle = null, softwareFallback = false, hdr = null,
-  sourceFps = null, quality = { height: config.height, bitrate: config.bitrate },
+  sourceFps = null, quality = { height: config.height, bitrate: config.bitrate }, countdown = null,
 }) {
   const encoderName = softwareFallback ? 'libx264' : config.encoder;
   const encoder = ENCODER_OPTIONS[encoderName] ?? ENCODER_OPTIONS.libx264;
@@ -76,7 +79,14 @@ export function buildFfmpegArgs({
     scale += `,zscale=tin=${hdr}:min=bt2020nc:pin=bt2020:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,`
       + 'tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv';
   }
-  const tail = `fps=${rate},format=${encoder.pixFmt}`;
+  let tail = `fps=${rate},format=${encoder.pixFmt}`;
+  if (countdown) {
+    // Bottom right, on top of everything, sized to the output height.
+    const size = Math.round(Math.min(quality.height, 720) / 26);
+    tail = `drawtext=${FONT ? `fontfile='${FONT}':` : ''}textfile=${countdown.file}:expansion=normal`
+      + `:enable='gte(t,${countdown.from.toFixed(2)})':fontsize=${size}:fontcolor=white:line_spacing=${Math.round(size / 4)}`
+      + `:box=1:boxcolor=black@0.6:boxborderw=${Math.round(size / 2)}:x=w-tw-${size * 2}:y=h-th-${size * 2},${tail}`;
+  }
   let graph;
   if (subtitle?.kind === 'image') {
     graph = `[0:v:0][0:${subtitle.index}]overlay=eof_action=pass,${scale},${tail}[v]`;

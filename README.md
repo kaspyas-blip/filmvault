@@ -9,7 +9,7 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 - **Vyhledávání a výběr** – `/pust` s našeptáváním, `/filmy` s filtrem žánru, roku a českého dabingu, `/serialy` s výběrem série a dílu
 - **Ovládání** – pauza, posun (`1:20:00`, `+5`, `-30s`), tlačítka pod zprávou, změna zvukové stopy a titulků za běhu
 - **Navazování** – pokračuje tam, kde jste skončili, pozice se ukládá do Jellyfinu
-- **Další díl** – po dohrání dílu seriálu sám pustí další se stejným jazykem
+- **Další díl** – posledních 30 s dílu ukazuje v rohu obrazu odpočet a pak hned naváže další díl se stejným jazykem, vysílání se mezi díly nepřeruší
 - **Čeština napřed** – bez výběru vezme český dabing (a české vynucené titulky), jinak české titulky
 - **Přehled** – `/filmy` a seznam dílů označí, co jste viděli (✅) a co máte rozkoukané (⏸)
 - **Historie** – `/videli` ukáže, co běželo, kdo to pustil a kde jste skončili; přes `/zapsat` jde přidat ručně a z nabídky odebrat
