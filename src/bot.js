@@ -23,7 +23,7 @@ const NEXT_EPISODE_DELAY_MS = 15_000;
 const PROGRESS_SAVE_MS = 60_000;
 const CZECH_LIST_CACHE_MS = 5 * 60_000;
 const GENRE_CACHE_MS = 10 * 60_000;
-const SLOW_LIST_MS = 1500;
+const SLOW_LIST_MS = Number(process.env.SLOW_LIST_MS ?? 1500);
 // Played this close to the end counts as watched (credits).
 const WATCHED_TAIL = 0.92;
 
@@ -807,6 +807,21 @@ export function startBot(player) {
       return interaction.reply({ content: 'Na ovládání kina nemáš oprávnění.', flags: MessageFlags.Ephemeral });
     }
     const received = Date.now();
+    // Each Discord call as "<ms after arrival>+<ms it took>", to tell our work from Discord's.
+    const calls = {};
+    if (isList) {
+      for (const name of ['deferUpdate', 'deferReply', 'editReply']) {
+        const call = interaction[name].bind(interaction);
+        interaction[name] = async (...args) => {
+          const start = Date.now();
+          try {
+            return await call(...args);
+          } finally {
+            calls[name] = `${start - received}+${Date.now() - start}`;
+          }
+        };
+      }
+    }
     try {
       if (isList) await handleListInteraction(interaction);
       else if (isNextUp) await handleNextUpButton(interaction);
@@ -817,7 +832,9 @@ export function startBot(player) {
     } finally {
       const handled = Date.now() - received;
       if (isList && handled > SLOW_LIST_MS) {
-        console.warn(`Slow list ${interaction.customId}: arrived after ${received - interaction.createdTimestamp} ms, handled in ${handled} ms`);
+        const timings = Object.entries(calls).map(([name, t]) => `${name} ${t}`).join(', ');
+        console.warn(`Slow list ${interaction.customId}: arrived after ${received - interaction.createdTimestamp} ms, `
+          + `handled in ${handled} ms (${timings})`);
       }
     }
   });
