@@ -5,7 +5,7 @@ import {
 } from 'discord.js';
 import { addWatch, history } from './history.js';
 import { durationSeconds, getItem, listLibrary } from './jellyfin.js';
-import { findMovie, imdbUrl, movieDetails, normalizeTitle, tmdbUrl } from './movieinfo.js';
+import { findMovie, imdbUrl, movieDetails, normalizeTitle, titleSimilarity, tmdbUrl } from './movieinfo.js';
 import { formatTime } from './time.js';
 
 /**
@@ -79,7 +79,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
   async function libraryIndex() {
     if (library && library.expires > Date.now()) return library;
     const { items } = await listLibrary('Movie', undefined, undefined, { fields: 'ProductionYear,ProviderIds,OriginalTitle' });
-    const index = { expires: Date.now() + LIBRARY_CACHE_MS, byImdb: new Map(), byTmdb: new Map(), byTitle: new Map() };
+    const index = { expires: Date.now() + LIBRARY_CACHE_MS, byImdb: new Map(), byTmdb: new Map(), byTitle: new Map(), items };
     for (const item of items) {
       const ids = item.ProviderIds ?? {};
       if (ids.Imdb) index.byImdb.set(ids.Imdb, item);
@@ -97,6 +97,17 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     return (film.imdbId && index.byImdb.get(film.imdbId))
       ?? index.byTmdb.get(String(film.tmdbId))
       ?? [film.title, film.originalTitle].map(t => index.byTitle.get(`${normalizeTitle(t)}|${film.year ?? ''}`)).find(Boolean)
+      ?? looseMatch(index.items, film);
+  }
+
+  /**
+   * Films Jellyfin never identified have no IMDb/TMDB IDs and often a file-like name
+   * ("Dannyho parťáci 1"): same year and every word of the title is enough.
+   */
+  function looseMatch(items, film) {
+    if (!film.year) return null;
+    return items.find(item => Math.abs((item.ProductionYear ?? 0) - film.year) <= 1
+      && [film.title, film.originalTitle].some(title => title && [item.Name, item.OriginalTitle].some(name => titleSimilarity(title, name) === 1)))
       ?? null;
   }
 
