@@ -15,10 +15,11 @@ const JOIN_TIMEOUT_MS = 20_000;
 const HARDWARE_RETRY_WINDOW_MS = 15_000;
 // ffmpeg forces a keyframe every second; sending starts at the second one after a restart.
 const RESTART_SKIP_KEYFRAMES = 2;
-// Receivers may buffer up to this much (10 ms units) so resent packets arrive in time.
-// 1 s: with ~2 % loss on the uplink, half a second was too short for a resend.
-// (The NACK responder keeps 512 packets, over 2 s of video at 2 Mbit/s.)
-const PLAYOUT_DELAY_MAX = 100;
+// Receivers buffer at least MIN and may buffer up to MAX (10 ms units), so resent
+// packets arrive in time. A max alone did not help with ~2 % loss on the uplink:
+// Discord kept its buffer short, so the min forces 2 s.
+const PLAYOUT_DELAY_MIN = 200;
+const PLAYOUT_DELAY_MAX = 600;
 
 /** True for an Annex B H.264 access unit containing an IDR slice. */
 function isH264Keyframe(frame) {
@@ -50,7 +51,7 @@ function isH264Keyframe(frame) {
  * The library caps the receivers' playout delay at 100 ms (video) and 10 ms
  * (audio). A lost packet is resent on NACK, but the resend arrives after that,
  * so each loss froze the picture until the next keyframe (~0.5 s on average).
- * Watching a film can afford a second of extra latency instead.
+ * Watching a film can afford a couple of seconds of extra latency instead.
  */
 function patchConnection(conn, isRestarting) {
   const setPacketizer = conn.setPacketizer.bind(conn);
@@ -66,7 +67,10 @@ function patchConnection(conn, isRestarting) {
     if (codec === videoCodec) return;
     codec = videoCodec;
     setPacketizer(videoCodec);
-    for (const track of tracks) conn[track.packetizer].rtpConfig.playoutDelayMax = PLAYOUT_DELAY_MAX;
+    for (const track of tracks) {
+      conn[track.packetizer].rtpConfig.playoutDelayMin = PLAYOUT_DELAY_MIN;
+      conn[track.packetizer].rtpConfig.playoutDelayMax = PLAYOUT_DELAY_MAX;
+    }
   };
   const media = conn.mediaConnection;
   for (const name of ['setSpeaking', 'setVideoAttributes']) {
