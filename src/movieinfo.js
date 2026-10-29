@@ -28,9 +28,20 @@ export function movieInfoEnabled() {
   return !!config.tmdbApiKey;
 }
 
-/** Lowercase without diacritics and punctuation, for comparing titles. */
+// Sequel numbers are written every way: "Mizerové 2" is "Mizerové II" on TMDB,
+// "Shrek 3" is "Shrek Třetí". ("v" is left alone, it is a Czech word.)
+const SEQUEL_WORDS = {
+  ii: '2', iii: '3', iv: '4', vi: '6', vii: '7', viii: '8', ix: '9',
+  druhy: '2', druha: '2', druhe: '2', second: '2',
+  treti: '3', third: '3',
+  ctvrty: '4', ctvrta: '4', ctvrte: '4', fourth: '4',
+  paty: '5', pata: '5', pate: '5', fifth: '5',
+};
+
+/** Lowercase without diacritics and punctuation, sequel words as digits, for comparing titles. */
 export function normalizeTitle(text) {
-  return (text ?? '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return (text ?? '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    .split(' ').map(word => SEQUEL_WORDS[word] ?? word).join(' ');
 }
 
 /** "Duna 2021", "Duna (2021)" -> { title: 'Duna', year: 2021 }; "Mizerové 1,2,3" -> { title: 'Mizerové' } */
@@ -74,10 +85,10 @@ const byVotes = (a, b) => b.votes - a.votes;
 export async function findMovie(text) {
   const { title, year } = parseQuery(text);
   // Only the results closest to what was written: "kryci jmeni zohan" keeps Zohan, not Krycí jméno U.N.C.L.E.
-  const search = async (query, language) => {
+  const search = async (query, language, wanted = title) => {
     const data = await tmdb('/search/movie', { query, language, include_adult: false, primary_release_year: year ?? undefined });
     const scored = (data.results ?? []).map(r => ({
-      ...brief(r), score: Math.max(titleSimilarity(title, r.title), titleSimilarity(title, r.original_title)),
+      ...brief(r), score: Math.max(titleSimilarity(wanted, r.title), titleSimilarity(wanted, r.original_title)),
     }));
     const top = Math.max(0, ...scored.map(r => r.score));
     return top < MIN_SIMILARITY ? [] : scored.filter(r => r.score === top);
@@ -88,6 +99,12 @@ export async function findMovie(text) {
   let results = await search(title, 'cs-CZ');
   if (!results.length) results = await search(title, 'en-US');
   if (!results.length && longest?.length >= 4 && longest !== normalizeTitle(title)) results = await search(longest, 'cs-CZ');
+  // A sequel without its number in the title ("Mizerové 3" is Mizerové navždy): offer the series.
+  const series = /^(.+?)\s+\d{1,2}$/.exec(title)?.[1];
+  if (!results.length && series) {
+    const parts = await search(series, 'cs-CZ', series);
+    if (parts.length) return { choices: parts.sort((a, b) => (a.year ?? 0) - (b.year ?? 0)).slice(0, CHOICES) };
+  }
   if (!results.length) return {};
   if (results.length === 1) return { match: results[0] };
   // Vote counts say which film people mean: "Oppenheimer" is the 2023 film, not a
