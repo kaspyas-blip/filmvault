@@ -17,8 +17,9 @@ import { formatTime } from './time.js';
 
 const FILE = 'data/wishlist.json';
 const LIST_TITLE = '🎬 Chceme vidět';
-const LIBRARY_CACHE_MS = 10 * 60_000;
-const PERIODIC_REFRESH_MS = 15 * 60_000;
+// Films added to Jellyfin turn ✅ within about five minutes.
+const LIBRARY_CACHE_MS = 2 * 60_000;
+const PERIODIC_REFRESH_MS = 5 * 60_000;
 const REFRESH_DEBOUNCE_MS = 1500;
 const NOT_FOUND_TTL_MS = 30_000;
 const MAX_LINES_PER_MESSAGE = 10;
@@ -50,6 +51,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
   let library = null; // { expires, byImdb, byTmdb, byTitle }
   let refreshTimer = null;
   let refreshing = Promise.resolve();
+  let lastRendered = null;
 
   const channel = () => client.channels.cache.get(channelId);
 
@@ -250,12 +252,16 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     if (!room) return;
     const list = await load();
     const payload = listPayload(await currentFilms());
+    const rendered = JSON.stringify(payload);
     const old = list.listMessageId && await room.messages.fetch(list.listMessageId).catch(() => null);
     if (old && room.lastMessageId === old.id) {
-      await old.edit(payload);
+      // The periodic refresh mostly finds nothing new; skip the edit then.
+      if (rendered !== lastRendered) await old.edit(payload);
+      lastRendered = rendered;
       return;
     }
     const sent = await room.send(payload);
+    lastRendered = rendered;
     list.listMessageId = sent.id;
     await save();
     await old?.delete().catch(() => {});
