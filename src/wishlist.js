@@ -1,7 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, StringSelectMenuBuilder } from 'discord.js';
-import { history } from './history.js';
-import { getItem, listLibrary } from './jellyfin.js';
+import {
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, ModalBuilder, StringSelectMenuBuilder,
+  TextInputBuilder, TextInputStyle,
+} from 'discord.js';
+import { addWatch, history } from './history.js';
+import { durationSeconds, getItem, listLibrary } from './jellyfin.js';
 import { findMovie, imdbUrl, movieDetails, normalizeTitle, tmdbUrl } from './movieinfo.js';
 import { formatTime } from './time.js';
 
@@ -110,7 +113,15 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     return { latest, finished };
   }
 
-  /** Each film with its Jellyfin item and watch state; drops films finished after they were added. */
+  /** History ID of a film: its Jellyfin item, or "tmdb:<id>" when watched elsewhere (YouTube…). */
+  function historyId(film, item) {
+    return item?.Id ?? `tmdb:${film.tmdbId}`;
+  }
+
+  /**
+   * Each film with its Jellyfin item and watch state; drops films finished after they
+   * were added. "elsewhere" is a link or note set by hand for films outside Jellyfin.
+   */
   async function currentFilms() {
     const list = await load();
     const watch = await watchIndex();
@@ -118,13 +129,20 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     const done = [];
     for (const film of list.films) {
       const item = await jellyfinItem(film);
-      const finishedAt = item && watch.finished.get(item.Id);
+      const id = historyId(film, item);
+      const finishedAt = watch.finished.get(id);
       if (finishedAt && finishedAt > film.addedAt) {
         done.push(film);
         continue;
       }
-      const latest = item && watch.latest.get(item.Id);
-      rows.push({ film, item, started: latest && !latest.finished ? latest.position : null, seenAt: finishedAt ?? null });
+      const latest = item && watch.latest.get(id);
+      rows.push({
+        film,
+        item,
+        elsewhere: !item && film.elsewhere ? film.elsewhere : null,
+        started: latest && !latest.finished ? latest.position : null,
+        seenAt: finishedAt ?? null,
+      });
     }
     if (done.length) {
       list.films = list.films.filter(f => !done.includes(f));
@@ -140,19 +158,28 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     return film.year ? `${film.title} (${film.year})` : film.title;
   }
 
-  function filmLine({ film, item, started }) {
-    const mark = !item ? '❌' : started ? '⏸' : '✅';
+  /** "na YouTube" with the link when there is one. */
+  function elsewhereText(elsewhere) {
+    const note = elsewhere.note || 'odkaz';
+    return elsewhere.url ? `[${note}](${elsewhere.url})` : note;
+  }
+
+  const playable = row => !!(row.item || row.elsewhere);
+
+  function filmLine({ film, item, elsewhere, started }) {
+    const mark = item ? (started ? '⏸' : '✅') : elsewhere ? '📺' : '❌';
     const link = imdbUrl(film.imdbId) ?? tmdbUrl(film.tmdbId);
     const parts = [`${mark} [${filmLabel(film)}](${link})`];
     if (film.rating) parts.push(`⭐ ${film.rating}`);
     if (started) parts.push(`skončili jste v ${formatTime(started)}`);
+    else if (elsewhere) parts.push(elsewhereText(elsewhere));
     else if (!item) parts.push('nemáme');
     if (film.addedBy) parts.push(film.addedBy);
     return parts.join(' · ');
   }
 
   function listPayload(rows) {
-    const sorted = [...rows].sort((a, b) => (!!b.item - !!a.item) || a.film.addedAt - b.film.addedAt);
+    const sorted = [...rows].sort((a, b) => (playable(b) - playable(a)) || (!!b.item - !!a.item) || a.film.addedAt - b.film.addedAt);
     const lines = [];
     let length = 0;
     for (const row of sorted) {
@@ -164,26 +191,26 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       lines.push(line);
       length += line.length + 1;
     }
-    const available = rows.filter(r => r.item).length;
+    const available = rows.filter(playable).length;
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setTitle(`${LIST_TITLE} (${rows.length})`)
       .setDescription(lines.join('\n') || 'Seznam je prázdný. Napiš sem název filmu a přidám ho.')
-      .setFooter({ text: `✅ máme (${available}) · ❌ nemáme · ⏸ rozkoukané · Přidáš ho napsáním názvu do této roomky` });
+      .setFooter({ text: `✅ máme · 📺 máme jinde · ❌ nemáme · ⏸ rozkoukané · Přidáš ho napsáním názvu do této roomky` });
     const components = [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('fw:roll').setLabel('🎲 Hodit kostkou').setStyle(ButtonStyle.Primary).setDisabled(!available),
     )];
     if (rows.length) {
       components.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
-        .setCustomId('fw:del').setPlaceholder('🗑 Odebrat ze seznamu…')
+        .setCustomId('fw:edit').setPlaceholder('✏️ Upravit nebo odebrat…')
         .addOptions(sorted.slice(0, 25).map(({ film }) => ({ label: filmLabel(film).slice(0, 100), value: String(film.tmdbId) })))));
     }
     return { embeds: [embed], components };
   }
 
-  function cardEmbed(details, { item, seenAt, addedBy }) {
+  function cardEmbed(details, { item, elsewhere, seenAt, addedBy }) {
     const embed = new EmbedBuilder()
-      .setColor(item ? 0x57f287 : 0x4e5058)
+      .setColor(item || elsewhere ? 0x57f287 : 0x4e5058)
       .setTitle(filmLabel(details))
       .setURL(imdbUrl(details.imdbId) ?? tmdbUrl(details.tmdbId));
     const original = details.originalTitle && details.originalTitle !== details.title ? `*${details.originalTitle}*\n` : '';
@@ -199,7 +226,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     if (details.genres.length) fields.push({ name: '🎭 Žánr', value: details.genres.slice(0, 3).join(', '), inline: true });
     if (details.director) fields.push({ name: '🎬 Režie', value: details.director, inline: true });
     if (details.trailer) fields.push({ name: '📺 Trailer', value: `[YouTube](${details.trailer})`, inline: true });
-    const status = item ? '✅ Máme v Jellyfinu' : '❌ Nemáme v Jellyfinu';
+    const status = item ? '✅ Máme v Jellyfinu' : elsewhere ? `📺 Máme jinde: ${elsewhereText(elsewhere)}` : '❌ Nemáme v Jellyfinu';
     fields.push({ name: 'Stav', value: seenAt ? `${status} · 👀 už jste viděli ${formatDate(seenAt)}` : status, inline: false });
     embed.addFields(fields);
     if (addedBy) embed.setFooter({ text: `Přidal(a): ${addedBy}` });
@@ -251,8 +278,9 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       await save();
     }
     const item = await jellyfinItem(film);
-    const seenAt = item ? (await watchIndex()).finished.get(item.Id) ?? null : null;
-    return { film, details, existing: !!existing, embed: cardEmbed(details, { item, seenAt, addedBy: film.addedBy }) };
+    const seenAt = (await watchIndex()).finished.get(historyId(film, item)) ?? null;
+    const elsewhere = !item ? film.elsewhere ?? null : null;
+    return { film, details, existing: !!existing, embed: cardEmbed(details, { item, elsewhere, seenAt, addedBy: film.addedBy }) };
   }
 
   function addedText({ film, existing }) {
@@ -340,20 +368,67 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
   // ---- Buttons and menus ----------------------------------------------------
 
   async function rollPayload() {
-    const candidates = (await currentFilms()).filter(r => r.item);
+    const candidates = (await currentFilms()).filter(playable);
     if (!candidates.length) return null;
     const pick = candidates[Math.floor(Math.random() * candidates.length)];
     const details = await movieDetails(pick.film.tmdbId);
-    const embed = cardEmbed(details, { item: pick.item, seenAt: pick.seenAt, addedBy: pick.film.addedBy });
-    const note = pick.started ? ` Rozkoukané, naváže od ${formatTime(pick.started)}.` : '';
+    const embed = cardEmbed(details, { item: pick.item, elsewhere: pick.elsewhere, seenAt: pick.seenAt, addedBy: pick.film.addedBy });
+    let note = pick.started ? ` Rozkoukané, naváže od ${formatTime(pick.started)}.` : '';
+    const buttons = [];
+    if (pick.item) {
+      buttons.push(new ButtonBuilder().setCustomId(`fw:play:${pick.item.Id}`).setLabel('▶ Pustit').setStyle(ButtonStyle.Success));
+    } else {
+      note = ` Tenhle není v Jellyfinu, je ${pick.elsewhere.note ? `na ${pick.elsewhere.note}` : 'jinde'}.`;
+      if (pick.elsewhere.url) buttons.push(new ButtonBuilder().setURL(pick.elsewhere.url).setLabel('🔗 Otevřít').setStyle(ButtonStyle.Link));
+      buttons.push(new ButtonBuilder().setCustomId(`fw:seen:${pick.film.tmdbId}`).setLabel('✅ Viděli jsme').setStyle(ButtonStyle.Success));
+    }
+    buttons.push(new ButtonBuilder().setCustomId('fw:roll').setLabel('🎲 Hodit znovu').setStyle(ButtonStyle.Secondary));
     return {
       content: `🎲 Kostka vybrala z ${candidates.length} filmů, které máme:${note}`,
       embeds: [embed],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`fw:play:${pick.item.Id}`).setLabel('▶ Pustit').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('fw:roll').setLabel('🎲 Hodit znovu').setStyle(ButtonStyle.Secondary),
-      )],
+      components: [new ActionRowBuilder().addComponents(buttons)],
     };
+  }
+
+  // ---- Editing one film -----------------------------------------------------
+
+  function editPanel(film, notice = '') {
+    const buttons = [
+      new ButtonBuilder().setCustomId(`fw:where:${film.tmdbId}`).setLabel(film.elsewhere ? '📺 Změnit, kde ho máme' : '📺 Máme jinde (odkaz)')
+        .setStyle(ButtonStyle.Primary),
+    ];
+    if (film.elsewhere) buttons.push(new ButtonBuilder().setCustomId(`fw:nowhere:${film.tmdbId}`).setLabel('↩ Zrušit „máme jinde“').setStyle(ButtonStyle.Secondary));
+    buttons.push(
+      new ButtonBuilder().setCustomId(`fw:seen:${film.tmdbId}`).setLabel('✅ Viděli jsme').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`fw:del:${film.tmdbId}`).setLabel('🗑 Odebrat').setStyle(ButtonStyle.Danger),
+    );
+    const where = film.elsewhere ? `\nTeď: 📺 ${elsewhereText(film.elsewhere)}` : '';
+    return {
+      content: `${notice ? `${notice}\n\n` : ''}✏️ **${filmLabel(film)}**${where}\n`
+        + '*Máme jinde* = film není v Jellyfinu, ale pustíte ho jinde (YouTube…); počítá se pak do kostky. '
+        + '*Viděli jsme* ho zapíše do /videli a ze seznamu zmizí.',
+      components: [new ActionRowBuilder().addComponents(buttons)],
+      flags: MessageFlags.Ephemeral,
+    };
+  }
+
+  function whereModal(film) {
+    const url = new TextInputBuilder().setCustomId('url').setLabel('Odkaz (nepovinný)').setStyle(TextInputStyle.Short)
+      .setRequired(false).setMaxLength(300).setPlaceholder('https://www.youtube.com/watch?v=…');
+    const note = new TextInputBuilder().setCustomId('note').setLabel('Kde to je (nepovinné)').setStyle(TextInputStyle.Short)
+      .setRequired(false).setMaxLength(60).setPlaceholder('YouTube režiséra');
+    if (film.elsewhere?.url) url.setValue(film.elsewhere.url);
+    if (film.elsewhere?.note) note.setValue(film.elsewhere.note);
+    return new ModalBuilder().setCustomId(`fw:wheresave:${film.tmdbId}`).setTitle(`Kde máme ${filmLabel(film)}`.slice(0, 45))
+      .addComponents(new ActionRowBuilder().addComponents(url), new ActionRowBuilder().addComponents(note));
+  }
+
+  /** Records a film as watched now (also when it was not in Jellyfin) so it drops off the list. */
+  async function markSeen(film, by) {
+    const item = await jellyfinItem(film);
+    const full = item ? await getItem(item.Id).catch(() => null) : null;
+    const duration = full ? durationSeconds(full) : null;
+    await addWatch({ id: historyId(film, item), label: filmLabel(film), by, endedAt: Date.now(), position: duration ?? 0, duration, finished: true });
   }
 
   async function handleInteraction(interaction) {
@@ -366,7 +441,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       if (fromList) await interaction.deferReply();
       else await interaction.deferUpdate();
       const payload = await rollPayload();
-      if (!payload) return interaction.editReply({ content: 'Na seznamu není žádný film, který máme v Jellyfinu.', embeds: [], components: [] });
+      if (!payload) return interaction.editReply({ content: 'Na seznamu není žádný film, který můžeme pustit.', embeds: [], components: [] });
       await interaction.editReply(payload);
       return refresh();
     }
@@ -380,14 +455,50 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
 
     if (!allowed(interaction)) return interaction.reply(ephemeral('Na tohle nemáš oprávnění.'));
 
-    if (action === 'del') {
-      const list = await load();
-      const tmdbId = Number(interaction.values[0]);
-      const film = list.films.find(f => f.tmdbId === tmdbId);
-      list.films = list.films.filter(f => f.tmdbId !== tmdbId);
+    const list = await load();
+    // Select menus carry the film in their value, panel buttons and the modal in the ID.
+    const tmdbId = Number(interaction.isStringSelectMenu() ? interaction.values[0] : value);
+    const film = list.films.find(f => f.tmdbId === tmdbId);
+    // Panel buttons replace the panel; the dice message stays as it is.
+    const fromPanel = interaction.message?.flags?.has(MessageFlags.Ephemeral);
+    const answer = payload => (fromPanel ? interaction.update(payload) : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral }));
+    if (action !== 'play' && !film) return answer({ content: 'Ten film už na seznamu není.', components: [] });
+
+    if (action === 'edit') return interaction.reply(editPanel(film));
+
+    if (action === 'where') return interaction.showModal(whereModal(film));
+
+    if (action === 'wheresave') {
+      const url = interaction.fields.getTextInputValue('url').trim() || null;
+      const note = interaction.fields.getTextInputValue('note').trim() || null;
+      if (url && !/^https?:\/\/\S+$/i.test(url)) return interaction.reply(ephemeral('Odkaz musí začínat http:// nebo https://.'));
+      if (!url && !note) return interaction.reply(ephemeral('Vyplň aspoň odkaz, nebo kde film je.'));
+      film.elsewhere = { url, note };
       await save();
-      await interaction.reply(ephemeral(film ? `🗑 Odebráno ze seznamu: **${filmLabel(film)}**` : 'Ten už na seznamu není.'));
-      return refresh();
+      refresh();
+      const done = `📺 Uloženo: **${filmLabel(film)}** máme jinde (${elsewhereText(film.elsewhere)}).`;
+      return interaction.isFromMessage() ? interaction.update(editPanel(film, done)) : interaction.reply(editPanel(film, done));
+    }
+
+    if (action === 'nowhere') {
+      delete film.elsewhere;
+      await save();
+      refresh();
+      return answer(editPanel(film, '↩ Zrušeno, film je zase vedený jako „nemáme“.'));
+    }
+
+    if (action === 'seen') {
+      await markSeen(film, userName(interaction));
+      refresh();
+      if (!fromPanel) await interaction.message.edit({ components: [] }).catch(() => {});
+      return answer({ content: `✅ **${filmLabel(film)}** je zapsaný v /videli a ze seznamu zmizí.`, components: [] });
+    }
+
+    if (action === 'del') {
+      list.films = list.films.filter(f => f !== film);
+      await save();
+      refresh();
+      return answer({ content: `🗑 Odebráno ze seznamu: **${filmLabel(film)}**`, components: [] });
     }
 
     if (action === 'play') {

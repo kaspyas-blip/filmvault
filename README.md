@@ -155,8 +155,12 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
 - Napiš do roomky název filmu (klidně víc filmů, každý na nový řádek, i bez diakritiky). Bot odpoví kartičkou s popisem, plakátem, hodnocením, délkou, režisérem a trailerem.
 - Když název sedí na víc filmů („Batman“), nabídne výběr. Rok upřesní hledání: `Duna 1984`.
 - Když nic nenajde, dá na zprávu jen 🤷, takže se v roomce dá normálně povídat.
-- Seznam drží bot vždy jako poslední zprávu: ✅ máme v Jellyfinu, ❌ nemáme, ⏸ rozkoukané. Po dokoukání v kině film sám zmizí (je pak v `/videli`).
-- **🎲 Hodit kostkou** vybere náhodně film, který máte, a nabídne ho rovnou pustit.
+- Seznam drží bot vždy jako poslední zprávu: ✅ máme v Jellyfinu, 📺 máme jinde, ❌ nemáme, ⏸ rozkoukané. Po dokoukání v kině film sám zmizí (je pak v `/videli`).
+- **✏️ Upravit nebo odebrat…** pod seznamem otevře u filmu panel:
+  - **📺 Máme jinde** – film není v Jellyfinu, ale máte ho jinde (třeba YouTube); uloží se odkaz a poznámka, film dostane 📺 a počítá se do kostky,
+  - **✅ Viděli jsme** – zapíše film do `/videli` a ze seznamu zmizí (hodí se pro filmy viděné mimo kino),
+  - **🗑 Odebrat** – smaže film ze seznamu.
+- **🎲 Hodit kostkou** vybere náhodně film, který máte (✅ nebo 📺): z Jellyfinu ho nabídne rovnou pustit, u 📺 ukáže odkaz.
 - Při prvním spuštění bot projde starší zprávy v roomce a filmy z nich převezme.
 
 ## Když něco nejde

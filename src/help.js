@@ -22,7 +22,7 @@ function helpEmbed(voiceChannelId, wishlistChannelId) {
           '`/serialy` – vybereš seriál → sérii → díl.',
           '`/videli` – co jsme viděli, kdy, kdo to pustil a kde jsme skončili. Nedokoukané jde pustit dál, omylem zapsané odebrat z nabídky 🗑.',
           '`/zapsat film` – ručně zapíše do historie, co jste viděli jinde. Volitelně `kdy` (`včera`, `28.10. 21:30`) a `skoncili` (`1:20:00`, jinak dokoukáno).',
-          wishlistChannelId && `**Chceme vidět** – napiš název filmu do <#${wishlistChannelId}> a bot ho přidá na seznam s info z IMDb. 🎲 vybere náhodně film, který máme.`,
+          wishlistChannelId && `**Chceme vidět** – napiš název filmu do <#${wishlistChannelId}> a bot ho přidá na seznam s info z IMDb. 🎲 vybere náhodně film, který máme; přes ✏️ jde nastavit, že film máme jinde (YouTube).`,
         ].filter(Boolean).join('\n'),
       },
       {

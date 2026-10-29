@@ -806,7 +806,7 @@ export function startBot(player) {
         return interaction.respond([]).catch(() => {});
       });
     }
-    if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('fw:')) {
+    if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) && interaction.customId.startsWith('fw:')) {
       if (!wishlist) return interaction.reply({ content: 'Seznam filmů teď nefunguje.', flags: MessageFlags.Ephemeral });
       return wishlist.handleInteraction(interaction).catch(error => replyError(interaction, error));
     }
