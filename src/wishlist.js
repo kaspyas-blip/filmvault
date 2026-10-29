@@ -402,7 +402,6 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     }
     const pick = fresh[Math.floor(Math.random() * fresh.length)];
     offered = [...offered, pick.film.tmdbId];
-    const shown = candidates.filter(r => offered.includes(r.film.tmdbId)).length;
     const details = await movieDetails(pick.film.tmdbId);
     const embed = cardEmbed(details, { item: pick.item, elsewhere: pick.elsewhere, seenAt: pick.seenAt, addedBy: pick.film.addedBy });
     let note = pick.started ? ` Rozkoukané, naváže od ${formatTime(pick.started)}.` : '';
@@ -419,7 +418,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     return {
       offered,
       payload: {
-        content: `🎲 Kostka vybrala ${shown}. z ${candidates.length} filmů, které máme:${note}${round}`,
+        content: `🎲 Kostka náhodně vybrala z ${fresh.length} filmů, které ještě nepadly (máme jich ${candidates.length}):${note}${round}`,
         embeds: [embed],
         components: [new ActionRowBuilder().addComponents(buttons)],
       },
