@@ -27,11 +27,19 @@ const MAX_TITLE_LENGTH = 80;
 const IMPORT_MESSAGES = 200;
 const DESCRIPTION_LIMIT = 4000;
 const DICE_MEMORY = 20;
+const NICKNAME_CACHE_MS = 10 * 60_000;
 
 
 function formatDate(ms) {
   return new Date(ms).toLocaleDateString('cs-CZ', { timeZone: 'Europe/Prague', day: 'numeric', month: 'numeric', year: 'numeric' });
 }
+
+/** "28. 10. 21:30" */
+function formatAdded(ms) {
+  return new Date(ms).toLocaleString('cs-CZ', { timeZone: 'Europe/Prague', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+const byTitle = (a, b) => a.film.title.localeCompare(b.film.title, 'cs') || (a.film.year ?? 0) - (b.film.year ?? 0);
 
 function formatRuntime(minutes) {
   if (!minutes) return null;
@@ -53,6 +61,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
   let refreshTimer = null;
   let refreshing = Promise.resolve();
   let lastRendered = null;
+  const nicknames = new Map(); // user ID -> { name, expires }
 
   const channel = () => client.channels.cache.get(channelId);
 
@@ -114,6 +123,34 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       ?? null;
   }
 
+  // ---- Who added it ----------------------------------------------------------
+
+  /** The name people use on the server now (server nickname), not the Discord username. */
+  async function adderName(film) {
+    if (!film.addedById) return film.addedBy ?? null;
+    const hit = nicknames.get(film.addedById);
+    if (hit && hit.expires > Date.now()) return hit.name;
+    const member = await channel()?.guild.members.fetch(film.addedById).catch(() => null);
+    const name = member?.displayName ?? film.addedBy ?? null;
+    nicknames.set(film.addedById, { name, expires: Date.now() + NICKNAME_CACHE_MS });
+    return name;
+  }
+
+  /** Films added before user IDs were stored only have a username: look it up once. */
+  async function resolveAdderIds() {
+    const list = await load();
+    const guild = channel().guild;
+    let changed = false;
+    for (const name of new Set(list.films.filter(f => !f.addedById && f.addedBy).map(f => f.addedBy))) {
+      const found = await guild.members.search({ query: name, limit: 10 }).catch(() => null);
+      const member = found?.find(m => [m.user.username, m.displayName, m.user.globalName].includes(name));
+      if (!member) continue;
+      for (const film of list.films.filter(f => !f.addedById && f.addedBy === name)) film.addedById = member.id;
+      changed = true;
+    }
+    if (changed) await save();
+  }
+
   // ---- Watch state --------------------------------------------------------
 
   /** Latest history entry per Jellyfin item, and when it was last finished. */
@@ -156,6 +193,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
         elsewhere: !item && film.elsewhere ? film.elsewhere : null,
         started: latest && !latest.finished ? latest.position : null,
         seenAt: finishedAt ?? null,
+        by: await adderName(film),
       });
     }
     if (done.length) {
@@ -180,7 +218,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
 
   const playable = row => !!(row.item || row.elsewhere);
 
-  function filmLine({ film, item, elsewhere, started }) {
+  function filmLine({ film, item, elsewhere, started, by }) {
     const mark = item ? (started ? '⏸' : '✅') : elsewhere ? '📺' : '❌';
     const link = imdbUrl(film.imdbId) ?? tmdbUrl(film.tmdbId);
     const parts = [`${mark} [${filmLabel(film)}](${link})`];
@@ -188,12 +226,13 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     if (started) parts.push(`skončili jste v ${formatTime(started)}`);
     else if (elsewhere) parts.push(elsewhereText(elsewhere));
     else if (!item) parts.push('nemáme');
-    if (film.addedBy) parts.push(film.addedBy);
+    if (by) parts.push(by);
+    if (film.addedAt) parts.push(formatAdded(film.addedAt));
     return parts.join(' · ');
   }
 
   function listPayload(rows) {
-    const sorted = [...rows].sort((a, b) => (playable(b) - playable(a)) || (!!b.item - !!a.item) || a.film.addedAt - b.film.addedAt);
+    const sorted = [...rows].sort(byTitle);
     const lines = [];
     let length = 0;
     for (const row of sorted) {
@@ -277,7 +316,8 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
 
   // ---- Adding ---------------------------------------------------------------
 
-  async function addFilm(tmdbId, addedBy) {
+  /** adder: { name, id } of whoever added it. */
+  async function addFilm(tmdbId, adder) {
     const list = await load();
     const existing = list.films.find(f => f.tmdbId === tmdbId);
     const details = await movieDetails(tmdbId);
@@ -288,7 +328,8 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       originalTitle: details.originalTitle,
       year: details.year,
       rating: details.rating,
-      addedBy,
+      addedBy: adder.name,
+      addedById: adder.id,
       addedAt: Date.now(),
     };
     if (!existing) {
@@ -298,7 +339,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     const item = await jellyfinItem(film);
     const seenAt = (await watchIndex()).finished.get(historyId(film, item)) ?? null;
     const elsewhere = !item ? film.elsewhere ?? null : null;
-    return { film, details, existing: !!existing, embed: cardEmbed(details, { item, elsewhere, seenAt, addedBy: film.addedBy }) };
+    return { film, details, existing: !!existing, embed: cardEmbed(details, { item, elsewhere, seenAt, addedBy: await adderName(film) }) };
   }
 
   function addedText({ film, existing }) {
@@ -318,7 +359,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       try {
         const { match, choices } = await findMovie(title);
         if (match) {
-          const added = await addFilm(match.tmdbId, by);
+          const added = await addFilm(match.tmdbId, { name: by, id: message.author.id });
           await message.reply({ content: addedText(added), embeds: [added.embed], allowedMentions: { repliedUser: false } });
         } else if (choices) {
           const menu = new StringSelectMenuBuilder().setCustomId('fw:pick').setPlaceholder('Vyber film…')
@@ -370,7 +411,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
           skipped.push(title);
           continue;
         }
-        const { film, existing } = await addFilm(pick.tmdbId, by).catch(() => ({}));
+        const { film, existing } = await addFilm(pick.tmdbId, { name: by, id: message.author.id }).catch(() => ({}));
         if (film && !existing) {
           film.addedAt = message.createdTimestamp;
           added.push(`${title} -> ${filmLabel(film)}${match ? '' : ' (guess)'}`);
@@ -403,7 +444,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     const pick = fresh[Math.floor(Math.random() * fresh.length)];
     offered = [...offered, pick.film.tmdbId];
     const details = await movieDetails(pick.film.tmdbId);
-    const embed = cardEmbed(details, { item: pick.item, elsewhere: pick.elsewhere, seenAt: pick.seenAt, addedBy: pick.film.addedBy });
+    const embed = cardEmbed(details, { item: pick.item, elsewhere: pick.elsewhere, seenAt: pick.seenAt, addedBy: pick.by });
     let note = pick.started ? ` Rozkoukané, naváže od ${formatTime(pick.started)}.` : '';
     const buttons = [];
     if (pick.item) {
@@ -490,7 +531,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
 
     if (action === 'pick') {
       await interaction.deferUpdate();
-      const added = await addFilm(Number(interaction.values[0]), userName(interaction));
+      const added = await addFilm(Number(interaction.values[0]), { name: userName(interaction), id: interaction.user.id });
       await interaction.editReply({ content: addedText(added), embeds: [added.embed], components: [] });
       return refresh();
     }
@@ -558,6 +599,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       handleMessage(message).catch(error => console.error('Wishlist message failed:', error));
     });
     await importExisting();
+    await resolveAdderIds();
     await renderList();
     setInterval(refresh, PERIODIC_REFRESH_MS).unref();
   }
