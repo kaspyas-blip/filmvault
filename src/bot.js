@@ -176,7 +176,8 @@ export function startBot(player) {
     return rows;
   }
 
-  function nowPlayingEmbed({ hasPoster = false } = {}) {
+  /** poster: image URL for the thumbnail ('attachment://poster.jpg' on the first send). */
+  function nowPlayingEmbed({ poster = null } = {}) {
     const { item } = player;
     const embed = new EmbedBuilder()
       .setColor(player.paused ? 0xf0b232 : 0x5865f2)
@@ -188,7 +189,7 @@ export function startBot(player) {
         { name: 'Titulky', value: player.subtitleTrack ? trackLabel(player.subtitleTrack) : 'vypnuto', inline: false },
       );
     if (item.Overview) embed.setDescription(item.Overview.length > 300 ? `${item.Overview.slice(0, 299)}…` : item.Overview);
-    if (hasPoster) embed.setThumbnail('attachment://poster.jpg');
+    if (poster) embed.setThumbnail(poster);
     if (nowPlaying?.requestedBy) embed.setFooter({ text: `Spustil(a): ${nowPlaying.requestedBy}` });
     return embed;
   }
@@ -204,10 +205,25 @@ export function startBot(player) {
     await message.edit({ content: '', embeds: [endedEmbed(item, text)], components: [], attachments: [] }).catch(() => {});
   }
 
-  async function refreshNowPlaying() {
-    if (!nowPlaying?.message || !player.active) return;
-    const hasPoster = nowPlaying.message.attachments.size > 0;
-    await nowPlaying.message.edit({ embeds: [nowPlayingEmbed({ hasPoster })], components: controls() }).catch(() => {});
+  /**
+   * Edits keep the poster inside the embed: they point the thumbnail at the URL
+   * Discord gave the uploaded poster and keep that attachment explicitly. With
+   * 'attachment://' again, and several clicks editing at once, the poster sometimes
+   * ended up as a separate image above the message. Edits run one at a time.
+   */
+  function refreshNowPlaying() {
+    const current = nowPlaying;
+    if (!current?.message) return Promise.resolve();
+    current.editing = (current.editing ?? Promise.resolve()).then(async () => {
+      if (nowPlaying !== current || !player.active) return;
+      const { message } = current;
+      await message.edit({
+        embeds: [nowPlayingEmbed({ poster: message.embeds[0]?.thumbnail?.url })],
+        components: controls(),
+        attachments: [...message.attachments.values()],
+      }).catch(() => {});
+    });
+    return current.editing;
   }
 
   function allowed(interaction) {
@@ -267,7 +283,7 @@ export function startBot(player) {
     const resumeNote = resumedFrom ? ` Navazuje od ${formatTime(resumedFrom)}, kde jste skončili.` : '';
     nowPlaying.message = await send({
       content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}`,
-      embeds: [nowPlayingEmbed({ hasPoster: !!poster })],
+      embeds: [nowPlayingEmbed({ poster: poster && 'attachment://poster.jpg' })],
       components: controls(),
       files: poster ? [new AttachmentBuilder(poster, { name: 'poster.jpg' })] : [],
     });
