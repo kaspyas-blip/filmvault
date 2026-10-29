@@ -207,23 +207,23 @@ export function startBot(player) {
   }
 
   /**
-   * Edits keep the poster inside the embed: the thumbnail refers to the uploaded
-   * file and the edit lists that attachment explicitly. Without it, and with several
-   * clicks editing at once, the poster sometimes ended up as a separate image above
-   * the message. (Pointing the thumbnail at the file's CDN URL dropped it entirely.)
-   * Edits run one at a time.
+   * Each edit uploads the poster again in place of the old one, exactly like the
+   * first send. Referring to the existing attachment instead either left it as a
+   * separate image above the message or dropped the thumbnail. Edits run one at a
+   * time, so quick clicks cannot cross.
    */
   function refreshNowPlaying() {
     const current = nowPlaying;
     if (!current?.message) return Promise.resolve();
     current.editing = (current.editing ?? Promise.resolve()).then(async () => {
       if (nowPlaying !== current || !player.active) return;
-      const poster = current.message.attachments.find(a => a.name === POSTER_FILE);
+      const { poster } = current;
       await current.message.edit({
         embeds: [nowPlayingEmbed({ poster: poster && `attachment://${POSTER_FILE}` })],
         components: controls(),
-        attachments: poster ? [poster] : [],
-      }).catch(() => {});
+        attachments: [],
+        files: poster ? [new AttachmentBuilder(poster, { name: POSTER_FILE })] : [],
+      }).catch(error => console.warn('Now-playing message edit failed:', error.message));
     });
     return current.editing;
   }
@@ -281,7 +281,7 @@ export function startBot(player) {
     if (previous) await retireNowPlaying(previous, 'Přepnuto na jiný film.');
 
     const poster = await downloadPoster(item);
-    nowPlaying = { message: null, requestedBy, resumedFrom };
+    nowPlaying = { message: null, requestedBy, resumedFrom, poster };
     const resumeNote = resumedFrom ? ` Navazuje od ${formatTime(resumedFrom)}, kde jste skončili.` : '';
     nowPlaying.message = await send({
       content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}`,
