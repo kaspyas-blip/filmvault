@@ -28,22 +28,24 @@ const IMPORT_MESSAGES = 200;
 const DESCRIPTION_LIMIT = 4000;
 const DICE_MEMORY = 20;
 const NICKNAME_CACHE_MS = 10 * 60_000;
-// Table columns: long titles and nicknames are cut so a row fits the embed width.
-const TITLE_WIDTH = 26;
-const NAME_WIDTH = 10;
+// Table columns: long titles and nicknames are cut so a row (about 47 characters)
+// fits the embed width on a computer without wrapping.
+const TITLE_WIDTH = 18;
+const NAME_WIDTH = 8;
+const MAX_LINK_BUTTONS = 14;
 
 
 function formatDate(ms) {
   return new Date(ms).toLocaleDateString('cs-CZ', { timeZone: 'Europe/Prague', day: 'numeric', month: 'numeric', year: 'numeric' });
 }
 
-/** "28.10. 21:30", always 12 characters for the table. */
+/** "28.10 21:30", always 11 characters for the table. */
 function formatAdded(ms) {
   if (!ms) return '';
   const part = Object.fromEntries(new Intl.DateTimeFormat('cs-CZ', {
     timeZone: 'Europe/Prague', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).formatToParts(new Date(ms)).map(p => [p.type, p.value]));
-  return `${part.day}.${part.month}. ${part.hour}:${part.minute}`;
+  return `${part.day}.${part.month} ${part.hour}:${part.minute}`;
 }
 
 const byTitle = (a, b) => a.film.title.localeCompare(b.film.title, 'cs') || (a.film.year ?? 0) - (b.film.year ?? 0);
@@ -242,14 +244,18 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
    */
   function listPayload(rows) {
     const sorted = [...rows].sort(byTitle);
-    const titleWidth = Math.min(TITLE_WIDTH, Math.max(4, ...sorted.map(r => [...filmLabel(r.film)].length)));
+    // The year only where two films share a title (Duna 1984 and 2021).
+    const titleCounts = new Map();
+    for (const { film } of sorted) titleCounts.set(film.title, (titleCounts.get(film.title) ?? 0) + 1);
+    const tableTitle = film => (titleCounts.get(film.title) > 1 && film.year ? `${film.title} ${film.year}` : film.title);
+    const titleWidth = Math.min(TITLE_WIDTH, Math.max(4, ...sorted.map(r => [...tableTitle(r.film)].length)));
     const nameWidth = Math.min(NAME_WIDTH, Math.max(6, ...sorted.map(r => [...(r.by ?? '')].length)));
     const header = `   ${cell('Film', titleWidth)} IMDb ${cell('Přidal', nameWidth)} Kdy`;
     const lines = [];
     let length = header.length + 8;
     for (const row of sorted) {
       const rating = row.film.rating ? row.film.rating.toFixed(1) : '–';
-      const line = `${mark(row)} ${cell(filmLabel(row.film), titleWidth)} ${rating.padStart(4)} ${cell(row.by, nameWidth)} ${formatAdded(row.film.addedAt)}`;
+      const line = `${mark(row)} ${cell(tableTitle(row.film), titleWidth)} ${rating.padStart(4)} ${cell(row.by, nameWidth)} ${formatAdded(row.film.addedAt)}`;
       if (length + line.length + 1 > DESCRIPTION_LIMIT - 300) {
         lines.push(`…a dalších ${sorted.length - lines.length}`);
         break;
@@ -257,9 +263,8 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       lines.push(line);
       length += line.length + 1;
     }
-    const links = sorted.filter(r => r.elsewhere?.url).map(r => `📺 ${filmLabel(r.film)}: ${elsewhereText(r.elsewhere)}`);
     const description = lines.length
-      ? ['```', header, ...lines, '```', ...links].join('\n')
+      ? ['```', header, ...lines, '```'].join('\n')
       : 'Seznam je prázdný. Napiš sem název filmu a přidám ho.';
     const available = rows.filter(playable).length;
     const embed = new EmbedBuilder()
@@ -267,9 +272,14 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       .setTitle(`${LIST_TITLE} (${rows.length})`)
       .setDescription(description)
       .setFooter({ text: `✅ máme · 📺 máme jinde · ❌ nemáme · ⏸ rozkoukané · Přidáš ho napsáním názvu do této roomky` });
-    const components = [new ActionRowBuilder().addComponents(
+    // Films "elsewhere" get a link button next to the dice (links cannot live in the table).
+    const buttons = [
       new ButtonBuilder().setCustomId('fw:roll').setLabel('🎲 Hodit kostkou').setStyle(ButtonStyle.Primary).setDisabled(!available),
-    )];
+      ...sorted.filter(r => r.elsewhere?.url).slice(0, MAX_LINK_BUTTONS).map(r =>
+        new ButtonBuilder().setURL(r.elsewhere.url).setLabel(`📺 ${tableTitle(r.film)}`.slice(0, 80)).setStyle(ButtonStyle.Link)),
+    ];
+    const components = [];
+    for (let i = 0; i < buttons.length; i += 5) components.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
     if (rows.length) {
       components.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
         .setCustomId('fw:edit').setPlaceholder('✏️ Upravit nebo odebrat…')
