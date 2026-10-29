@@ -3,7 +3,7 @@ import {
   MessageFlags, SlashCommandBuilder, StringSelectMenuBuilder,
 } from 'discord.js';
 import { config } from './config.js';
-import { ensureHelpPinned } from './help.js';
+import { keepHelpLast } from './help.js';
 import { addWatch, entryKey, history, recordWatch, removeWatch } from './history.js';
 import {
   SORTS, audioTracks, defaultTracks, downloadPoster, durationSeconds, getItem, isCzech, itemLabel, listEpisodes, listGenres,
@@ -892,7 +892,7 @@ export function startBot(player) {
       await guild.commands.set(commands);
       console.log(`Registered ${commands.length} slash commands in ${guild.name}; text #${text.name}, voice ${voice.name}`);
       const wishlistChannelId = await startWishlist(guild);
-      await ensureHelpPinned(client, text, voice.id, wishlistChannelId).catch(error => console.error('Help message failed:', error.message));
+      await keepHelpLast(client, text, voice.id, wishlistChannelId).catch(error => console.error('Help message failed:', error.message));
     } catch (error) {
       console.error('Startup failed:', error);
       process.exit(1);

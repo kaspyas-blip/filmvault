@@ -55,30 +55,47 @@ function helpEmbed(voiceChannelId, wishlistChannelId) {
     );
 }
 
-/** Posts the help message into the text channel and pins it; edits it in place when the text changes. */
-/** wishlistChannelId: the "want to watch" room, or null when it is off. */
-export async function ensureHelpPinned(client, channel, voiceChannelId, wishlistChannelId = null) {
+const REPOST_DELAY_MS = 3000;
+
+/**
+ * Keeps the help message as the last message in the text channel, like the wishlist:
+ * whenever something else is posted there it is sent again and the old copy deleted.
+ * It used to be pinned; old pinned copies are removed on start. Edits itself when the
+ * text changes. wishlistChannelId: the "want to watch" room, or null when it is off.
+ */
+export async function keepHelpLast(client, channel, voiceChannelId, wishlistChannelId = null) {
   const embed = helpEmbed(voiceChannelId, wishlistChannelId);
   const version = createHash('sha1').update(JSON.stringify(embed.toJSON())).digest('hex').slice(0, 8);
   embed.setFooter({ text: `Návod se aktualizuje sám · ${version}` });
+  const payload = { embeds: [embed] };
 
   const isHelp = m => m.author.id === client.user.id && m.embeds[0]?.title === HELP_TITLE;
-  const pins = await channel.messages.fetchPins();
-  // Not pinned yet (e.g. the bot lacked the permission last time): look among recent messages.
-  let message = pins.items.map(p => p.message).find(isHelp)
-    ?? (await channel.messages.fetch({ limit: 50 })).find(isHelp);
-  if (!message) {
-    message = await channel.send({ embeds: [embed] });
-    console.log('Help message posted');
-  } else if (!message.embeds[0].footer?.text?.endsWith(version)) {
-    await message.edit({ embeds: [embed] });
+  const pins = await channel.messages.fetchPins().catch(() => ({ items: [] }));
+  const recent = await channel.messages.fetch({ limit: 50 });
+  const copies = [...new Map([...pins.items.map(p => p.message), ...recent.values()].filter(isHelp).map(m => [m.id, m])).values()];
+  let current = copies.find(m => m.id === channel.lastMessageId) ?? null;
+  for (const old of copies) if (old !== current) await old.delete().catch(() => {});
+  if (current && !current.embeds[0].footer?.text?.endsWith(version)) {
+    await current.edit(payload);
     console.log('Help message updated');
   }
-  if (message.pinned) return;
-  try {
-    await message.pin();
-    console.log('Help message pinned');
-  } catch (error) {
-    console.warn(`Help message not pinned (${error.message}); give the bot "Pin Messages" in #${channel.name}`);
+
+  let reposting = Promise.resolve();
+  let timer = null;
+  async function repost() {
+    if (current && channel.lastMessageId === current.id) return;
+    const previous = current;
+    current = await channel.send(payload);
+    await previous?.delete().catch(() => {});
   }
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      reposting = reposting.then(repost).catch(error => console.error('Help message repost failed:', error.message));
+    }, REPOST_DELAY_MS);
+  };
+  client.on('messageCreate', message => {
+    if (message.channelId === channel.id && message.id !== current?.id) schedule();
+  });
+  if (!current) await repost();
 }

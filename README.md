@@ -15,7 +15,7 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 - **Historie** – `/videli` ukáže, co běželo, kdo to pustil a kde jste skončili; přes `/zapsat` jde přidat ručně a z nabídky odebrat
 - **Chceme vidět** – v roomce se seznamem stačí napsat název filmu; bot dohledá popis, plakát a hodnocení z IMDb, pozná, jestli film máte, a po zhlédnutí ho sám odebere. 🎲 vybere náhodně film, který jde hned pustit
 - **HDR filmy** se převádí na normální barvy (jinak by v Discordu byly vybledlé)
-- **Nápověda** se sama připne do textového kanálu
+- **Nápověda** je v textovém kanálu vždy jako poslední zpráva
 
 ## Jak to funguje
 
@@ -64,7 +64,7 @@ Ovládání uživatelského účtu programem (selfbot) **porušuje podmínky pou
 2. V sekci **Bot** klikni na **Reset Token** a token si zkopíruj. Půjde do `BOT_TOKEN`. Nikomu ho neukazuj.
 3. Ve stejné sekci **Bot** zapni pod *Privileged Gateway Intents* volbu **Message Content Intent** a ulož. Bez ní bot nevidí, co lidi píšou do roomky „Chceme vidět“.
 4. V sekci **OAuth2 → URL Generator** zaškrtni scopes `bot` a `applications.commands` a oprávnění:
-   *View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Pin Messages*.
+   *View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Add Reactions*.
 5. Vygenerovaný odkaz otevři a bota přidej na svůj server.
 
 ### 3. Streamovací účet
@@ -121,7 +121,7 @@ ID kanálu, serveru nebo role zkopíruješ, když v Discordu zapneš **Nastaven�
 npm start
 ```
 
-Když v konzoli uvidíš `Registered 13 slash commands`, je hotovo. Bot do textového kanálu sám připne nápovědu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
+Když v konzoli uvidíš `Registered 13 slash commands`, je hotovo. Bot do textového kanálu sám pošle nápovědu a drží ji jako poslední zprávu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
 
 ### 8. Automatické spouštění (Windows)
 
@@ -169,7 +169,6 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
 | --- | --- |
 | `Missing BOT_TOKEN in .env` | `.env` chybí nebo není vyplněný, viz krok 6 |
 | Příkazy se v Discordu neukazují | bot nebyl pozván se scope `applications.commands`, nebo restartuj Discord (Ctrl+R) |
-| Nápověda se nepřipnula | bot nemá v textovém kanálu oprávnění *Pin Messages* |
 | Film se nespustí, chyba ffmpeg | ověř `FFMPEG_PATH`; bez Intel grafiky nastav `VIDEO_ENCODER=libx264` a `HW_DECODE=0` |
 | Obraz se trhá, zvuk jde | počítač nestíhá: sniž `VIDEO_BITRATE` nebo `VIDEO_HEIGHT`, nebo zapni kódování na grafice |
 | HDR film je vybledlý | ffmpeg nemá filtr `zscale`, stáhni „full“ build |
