@@ -25,8 +25,10 @@ const PLAYOUT_DELAY_MAX = 600;
 // Logs how evenly video frames go out, once a minute; a gap is a frame this late.
 const PACE_REPORT_MS = 60_000;
 const PACE_GAP_MS = 150;
-// Video goes out at most this many times the chosen bitrate (ffmpeg's maxrate is 1.4x).
-const SEND_RATE_FACTOR = 1.5;
+// Video goes out at most this many times the chosen bitrate. At 1.5x a keyframe took
+// up to 0.3 s to leave; Discord then kept retiming the sound to the late video and it
+// dropped out for a moment. At 4x a keyframe is out in well under 0.1 s.
+const SEND_RATE_FACTOR = 4;
 
 /**
  * libdatachannel hands incoming RTCP to a track by the SSRCs in the session
@@ -82,8 +84,9 @@ function isH264Keyframe(frame) {
  * The library paces video at 1.25x the last 250 ms, so a big frame raised the rate
  * with it: 20 ms bursts reached 7 Mbit/s at 2.5 Mbit/s on average. The uplink drops
  * what is over its limit, and lost packets sat mostly in those bursts (2.4 % of all).
- * Pacing at a fixed rate from the chosen bitrate spreads them out. (1.25x was no
- * better: the remaining ~1.5 % is lost past the router for any traffic, pings too.)
+ * Pacing at a fixed rate from the chosen bitrate keeps the peak known. The loss turned
+ * out not to depend on it (1.25x lost as much; pings past the router are lost too),
+ * so the rate is set for keyframes to leave quickly (see SEND_RATE_FACTOR).
  * videoBitrate: () => kbit/s of the current quality.
  */
 function patchConnection(conn, isRestarting, videoBitrate) {
