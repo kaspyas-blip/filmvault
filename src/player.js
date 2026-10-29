@@ -79,7 +79,8 @@ function isH264Keyframe(frame) {
  * The library paces video at 1.25x the last 250 ms, so a big frame raised the rate
  * with it: 20 ms bursts reached 7 Mbit/s at 2.5 Mbit/s on average. The uplink drops
  * what is over its limit, and lost packets sat mostly in those bursts (2.4 % of all).
- * Pacing at a fixed rate from the chosen bitrate spreads them out.
+ * Pacing at a fixed rate from the chosen bitrate spreads them out. (1.25x was no
+ * better: the remaining ~1.5 % is lost past the router for any traffic, pings too.)
  * videoBitrate: () => kbit/s of the current quality.
  */
 function patchConnection(conn, isRestarting, videoBitrate) {
