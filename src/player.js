@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { Client } from '@lng2004/discord.js-selfbot-v13';
-import { Streamer, playStream } from '@dank074/discord-video-stream';
+import { BaseMediaConnection, Streamer, playStream } from '@dank074/discord-video-stream';
 import { config } from './config.js';
 import { buildFfmpegArgs, hdrTransfer } from './ffmpeg.js';
 import { raiseTimerResolution } from './timer.js';
@@ -21,6 +21,25 @@ const PLAYOUT_DELAY_MAX = 600;
 // Logs how evenly video frames go out, once a minute; a gap is a frame this late.
 const PACE_REPORT_MS = 60_000;
 const PACE_GAP_MS = 150;
+
+/**
+ * libdatachannel hands incoming RTCP to a track by the SSRCs in the session
+ * description, and the library never puts ours there. So every resend request
+ * (NACK) from Discord was dropped: each lost packet froze the viewers' picture
+ * until the next keyframe (a third of the time on a line losing ~1 % of packets).
+ * The SSRCs come in Discord's ready message, before the tracks are created.
+ */
+const handleReady = BaseMediaConnection.prototype.handleReady;
+BaseMediaConnection.prototype.handleReady = function (d) {
+  handleReady.call(this, d);
+  const { audioSsrc, videoSsrc } = this._webRtcParams;
+  const wrapper = this._webRtcWrapper;
+  for (const [description, ssrc] of [[wrapper._audioDef, audioSsrc], [wrapper._videoDef, videoSsrc]]) {
+    if (!description || !ssrc) continue;
+    for (const old of description.getSSRCs()) description.removeSSRC(old);
+    description.addSSRC(ssrc, 'filmvault');
+  }
+};
 
 /** True for an Annex B H.264 access unit containing an IDR slice. */
 function isH264Keyframe(frame) {
