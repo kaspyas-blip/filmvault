@@ -26,6 +26,7 @@ const MAX_LINES_PER_MESSAGE = 10;
 const MAX_TITLE_LENGTH = 80;
 const IMPORT_MESSAGES = 200;
 const DESCRIPTION_LIMIT = 4000;
+const DICE_MEMORY = 20;
 
 
 function formatDate(ms) {
@@ -384,10 +385,24 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
 
   // ---- Buttons and menus ----------------------------------------------------
 
-  async function rollPayload() {
+  /**
+   * One dice message goes through the whole list before repeating: "offered" holds
+   * the films it already showed. Returns { payload, offered } or null.
+   */
+  async function roll(offered = []) {
     const candidates = (await currentFilms()).filter(playable);
     if (!candidates.length) return null;
-    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    let fresh = candidates.filter(r => !offered.includes(r.film.tmdbId));
+    let restarted = false;
+    if (!fresh.length) {
+      // Everything was offered: start over, but not with the film just shown.
+      fresh = candidates.length > 1 ? candidates.filter(r => r.film.tmdbId !== offered.at(-1)) : candidates;
+      offered = [];
+      restarted = true;
+    }
+    const pick = fresh[Math.floor(Math.random() * fresh.length)];
+    offered = [...offered, pick.film.tmdbId];
+    const shown = candidates.filter(r => offered.includes(r.film.tmdbId)).length;
     const details = await movieDetails(pick.film.tmdbId);
     const embed = cardEmbed(details, { item: pick.item, elsewhere: pick.elsewhere, seenAt: pick.seenAt, addedBy: pick.film.addedBy });
     let note = pick.started ? ` Rozkoukané, naváže od ${formatTime(pick.started)}.` : '';
@@ -400,10 +415,14 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       buttons.push(new ButtonBuilder().setCustomId(`fw:seen:${pick.film.tmdbId}`).setLabel('✅ Viděli jsme').setStyle(ButtonStyle.Success));
     }
     buttons.push(new ButtonBuilder().setCustomId('fw:roll').setLabel('🎲 Hodit znovu').setStyle(ButtonStyle.Secondary));
+    const round = restarted ? ' Všechny filmy už padly, jedeme znovu od začátku.' : '';
     return {
-      content: `🎲 Kostka vybrala z ${candidates.length} filmů, které máme:${note}`,
-      embeds: [embed],
-      components: [new ActionRowBuilder().addComponents(buttons)],
+      offered,
+      payload: {
+        content: `🎲 Kostka vybrala ${shown}. z ${candidates.length} filmů, které máme:${note}${round}`,
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(buttons)],
+      },
     };
   }
 
@@ -457,9 +476,16 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       const fromList = interaction.message.embeds[0]?.title?.startsWith(LIST_TITLE);
       if (fromList) await interaction.deferReply();
       else await interaction.deferUpdate();
-      const payload = await rollPayload();
-      if (!payload) return interaction.editReply({ content: 'Na seznamu není žádný film, který můžeme pustit.', embeds: [], components: [] });
-      await interaction.editReply(payload);
+      const list = await load();
+      list.dice ??= {};
+      const result = await roll(fromList ? [] : list.dice[interaction.message.id]);
+      if (!result) return interaction.editReply({ content: 'Na seznamu není žádný film, který můžeme pustit.', embeds: [], components: [] });
+      const message = await interaction.editReply(result.payload);
+      delete list.dice[interaction.message.id];
+      list.dice[message.id] = result.offered;
+      // Only recent dice messages are worth remembering.
+      for (const id of Object.keys(list.dice).slice(0, -DICE_MEMORY)) delete list.dice[id];
+      await save();
       return refresh();
     }
 

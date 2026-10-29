@@ -160,7 +160,7 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
   - **📺 Máme jinde** – film není v Jellyfinu, ale máte ho jinde (třeba YouTube); uloží se odkaz a poznámka, film dostane 📺 a počítá se do kostky,
   - **✅ Viděli jsme** – zapíše film do `/videli` a ze seznamu zmizí (hodí se pro filmy viděné mimo kino),
   - **🗑 Odebrat** – smaže film ze seznamu.
-- **🎲 Hodit kostkou** vybere náhodně film, který máte (✅ nebo 📺): z Jellyfinu ho nabídne rovnou pustit, u 📺 ukáže odkaz.
+- **🎲 Hodit kostkou** vybere náhodně film, který máte (✅ nebo 📺): z Jellyfinu ho nabídne rovnou pustit, u 📺 ukáže odkaz. **Hodit znovu** u téže kostky nenabídne nic, co už padlo, dokud neprojde celý seznam.
 - Při prvním spuštění bot projde starší zprávy v roomce a filmy z nich převezme.
 
 ## Když něco nejde
