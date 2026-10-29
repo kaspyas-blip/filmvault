@@ -171,6 +171,7 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
 | Příkazy se v Discordu neukazují | bot nebyl pozván se scope `applications.commands`, nebo restartuj Discord (Ctrl+R) |
 | Film se nespustí, chyba ffmpeg | ověř `FFMPEG_PATH`; bez Intel grafiky nastav `VIDEO_ENCODER=libx264` a `HW_DECODE=0` |
 | Obraz se trhá, zvuk jde | počítač nestíhá: sniž `VIDEO_BITRATE` nebo `VIDEO_HEIGHT`, nebo zapni kódování na grafice |
+| Seká se, ve statistikách streamu je hodně *Packets Lost* / *NACK* | ztrácejí se pakety na lince: sniž `VIDEO_BITRATE` (třeba `2000`), zkus jiný region hlasového kanálu |
 | HDR film je vybledlý | ffmpeg nemá filtr `zscale`, stáhni „full“ build |
 | Bot nereaguje na názvy v roomce se seznamem | zapni *Message Content Intent* (krok 2) a vyplň `TMDB_API_KEY` |
 | Kino navazuje od divného místa | nastav `JELLYFIN_USER`, jinak sdílí pozice s administrátorem |

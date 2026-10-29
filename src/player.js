@@ -16,7 +16,9 @@ const HARDWARE_RETRY_WINDOW_MS = 15_000;
 // ffmpeg forces a keyframe every second; sending starts at the second one after a restart.
 const RESTART_SKIP_KEYFRAMES = 2;
 // Receivers may buffer up to this much (10 ms units) so resent packets arrive in time.
-const PLAYOUT_DELAY_MAX = 50;
+// 1 s: with ~2 % loss on the uplink, half a second was too short for a resend.
+// (The NACK responder keeps 512 packets, over 2 s of video at 2 Mbit/s.)
+const PLAYOUT_DELAY_MAX = 100;
 
 /** True for an Annex B H.264 access unit containing an IDR slice. */
 function isH264Keyframe(frame) {
@@ -48,7 +50,7 @@ function isH264Keyframe(frame) {
  * The library caps the receivers' playout delay at 100 ms (video) and 10 ms
  * (audio). A lost packet is resent on NACK, but the resend arrives after that,
  * so each loss froze the picture until the next keyframe (~0.5 s on average).
- * Watching a film can afford half a second of extra latency instead.
+ * Watching a film can afford a second of extra latency instead.
  */
 function patchConnection(conn, isRestarting) {
   const setPacketizer = conn.setPacketizer.bind(conn);
