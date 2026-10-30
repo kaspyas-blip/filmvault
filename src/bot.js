@@ -41,7 +41,8 @@ const AUTOPLAY_MAX_AGE_MS = 10 * 60_000;
 const NOW_PLAYING_FILE = 'data/nowplaying.json';
 const NOW_PLAYING_SAVE_MS = 15_000;
 // People in the voice room are counted this often for the statistics.
-const VIEWER_TICK_MS = 30_000;
+// (Often, so a pause or a start between two counts adds little error.)
+const VIEWER_TICK_MS = 5000;
 // A failed stream is started again where it fell, this many times within the window.
 const RECOVERY_ATTEMPTS = 3;
 const RECOVERY_WINDOW_MS = 10 * 60_000;
@@ -112,6 +113,7 @@ export function startBot(player) {
   // Played time and who was in the voice room, for the item now playing (statistics).
   let watching = null; // { itemId, watched, viewers: { id: { name, seconds } }, at }
   const recoveries = new Map(); // item ID -> times it was started again after failing
+  let recovery = null; // { item, current } while a failed stream waits to be started again
   const startedAt = Date.now();
   let aloneTimer = null;
   let guildId = null;
@@ -260,12 +262,21 @@ export function startBot(player) {
 
   // ---- Surviving crashes and restarts -------------------------------------
 
-  async function saveNowPlaying() {
+  // Saves and removals of the file run one after another, so a save that was under way
+  // cannot bring the file back after /stop removed it.
+  let nowPlayingWrites = Promise.resolve();
+  function onNowPlayingFile(task) {
+    const result = nowPlayingWrites.then(task);
+    nowPlayingWrites = result.catch(() => {});
+    return result;
+  }
+
+  function saveNowPlaying() {
     const current = nowPlaying;
-    if (!current?.message || !player.active) return;
+    if (!current?.message || current.itemId !== player.item?.Id) return Promise.resolve();
     const state = {
       messageId: current.message.id,
-      itemId: player.item.Id,
+      itemId: current.itemId,
       position: Math.round(player.position()),
       by: current.requestedBy,
       byId: current.requestedById ?? null,
@@ -273,13 +284,34 @@ export function startBot(player) {
       subtitleIndex: player.subtitleIndex,
       savedAt: Date.now(),
     };
-    await mkdir('data', { recursive: true });
-    await writeFile(`${NOW_PLAYING_FILE}.tmp`, JSON.stringify(state));
-    await rename(`${NOW_PLAYING_FILE}.tmp`, NOW_PLAYING_FILE);
+    return onNowPlayingFile(async () => {
+      if (nowPlaying !== current) return;
+      await mkdir('data', { recursive: true });
+      await writeFile(`${NOW_PLAYING_FILE}.tmp`, JSON.stringify(state));
+      await rename(`${NOW_PLAYING_FILE}.tmp`, NOW_PLAYING_FILE);
+    });
   }
 
   function forgetNowPlaying() {
-    return rm(NOW_PLAYING_FILE, { force: true }).catch(() => {});
+    return onNowPlayingFile(() => rm(NOW_PLAYING_FILE, { force: true })).catch(() => {});
+  }
+
+  /** Ends the message of `current`, also when another now-playing replaced it meanwhile. */
+  async function retireMessage(current, item, text) {
+    if (nowPlaying === current) return retireNowPlaying(item, text);
+    await current?.message?.edit({ content: '', embeds: [endedEmbed(item, text)], components: [], attachments: [] }).catch(() => {});
+  }
+
+  /**
+   * Stops a recovery that is waiting to start the stream again (/stop, /odejdi,
+   * everyone left). Returns whether there was one.
+   */
+  function cancelRecovery(text) {
+    if (!recovery) return false;
+    const { item, current } = recovery;
+    recovery = null;
+    retireMessage(current, item, text).catch(() => {});
+    return true;
   }
 
   /**
@@ -296,20 +328,28 @@ export function startBot(player) {
     if (dead.size) console.log(`Deleted ${dead.size} now-playing message(s) left from before the restart`);
   }
 
-  /** Starts a failed item again where it fell, a few times, then gives up as before. */
-  async function recoverPlayback(item, message, position) {
+  /**
+   * Starts a failed item again where it fell, a few times, then gives up as before.
+   * current: the now-playing of the failed item (kept across retries).
+   */
+  async function recoverPlayback(item, message, position, current = nowPlaying, tracks = null) {
     const now = Date.now();
     const attempts = (recoveries.get(item.Id) ?? []).filter(at => now - at < RECOVERY_WINDOW_MS);
-    const current = nowPlaying;
-    if (attempts.length >= RECOVERY_ATTEMPTS || !peopleInVoice()) {
-      return retireNowPlaying(item, `⚠️ Přehrávání spadlo v čase ${formatTime(position)}: ${message}\nZkus znovu \`/pust\`, naváže od místa, kde to spadlo.`);
-    }
+    const giveUp = () => retireMessage(current, item,
+      `⚠️ Přehrávání spadlo v čase ${formatTime(position)}: ${message}\nZkus znovu \`/pust\`, naváže od místa, kde to spadlo.`);
+    if (attempts.length >= RECOVERY_ATTEMPTS || !peopleInVoice()) return giveUp();
     recoveries.set(item.Id, [...attempts, now]);
-    const tracks = { audioIndex: lastTracks?.audio?.Index ?? null, subtitleIndex: lastTracks?.subtitle?.Index ?? null };
+    tracks ??= { audioIndex: lastTracks?.audio?.Index ?? null, subtitleIndex: lastTracks?.subtitle?.Index ?? null };
     console.warn(`Recovering ${itemLabel(item)} at ${Math.round(position)}s (attempt ${attempts.length + 1}): ${message}`);
+    const token = { item, current };
+    recovery = token;
     await new Promise(resolve => setTimeout(resolve, RECOVERY_DELAYS_MS[attempts.length]));
+    // Cancelled by /stop, /odejdi or everyone leaving; they retired the message.
+    if (recovery !== token) return undefined;
+    recovery = null;
     // Someone started something else meanwhile: only the dead message goes.
     if (player.active || nowPlaying !== current) return current?.message?.delete().catch(() => {});
+    if (!peopleInVoice()) return giveUp();
     try {
       const fresh = await getItem(item.Id);
       await beginPlayback(fresh, { startSeconds: Math.max(0, position - 5), tracks, byId: current?.requestedById },
@@ -318,7 +358,10 @@ export function startBot(player) {
       if (current?.message) await current.message.delete().catch(() => {});
     } catch (error) {
       console.error('Recovery failed:', error.message);
-      return recoverPlayback(item, error.message, position);
+      // A half-started attempt (e.g. its message failed to send) is undone first.
+      if (player.item?.Id === item.Id) await player.stop().catch(() => {});
+      nowPlaying = current;
+      return recoverPlayback(item, error.message, position, current, tracks);
     }
   }
 
@@ -404,8 +447,8 @@ export function startBot(player) {
     const resumedFrom = startSeconds === null ? resumeSeconds(item) : null;
     const previous = player.item;
     const next = await findNextEpisode(item);
-    player.autoSkipIntro = !!item.SeriesId && (await loadSettings()).skipIntro.includes(item.SeriesId);
     await player.play({
+      autoSkipIntro: !!item.SeriesId && (await loadSettings()).skipIntro.includes(item.SeriesId),
       countdown: next ? itemLabel(next) : null,
       item,
       channelId: voiceChannelId,
@@ -417,7 +460,7 @@ export function startBot(player) {
 
     loadSegments(item, next);
     const poster = await downloadPoster(item);
-    nowPlaying = { message: null, requestedBy, requestedById: byId, resumedFrom, poster, next, skipNext: false };
+    nowPlaying = { message: null, itemId: item.Id, requestedBy, requestedById: byId, resumedFrom, poster, next, skipNext: false };
     const resumeNote = resumedFrom ? ` Navazuje od ${formatTime(resumedFrom)}, kde jste skončili.` : '';
     nowPlaying.message = await send({
       content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}${note ? `\n${note}` : ''}`,
@@ -499,7 +542,9 @@ export function startBot(player) {
       if (watching) watching.at = now;
       return;
     }
-    if (watching?.itemId !== player.item.Id) watching = { itemId: player.item.Id, watched: 0, viewers: {}, at: now };
+    if (watching?.itemId !== player.item.Id) {
+      watching = { itemId: player.item.Id, watched: 0, viewers: {}, at: Math.min(now, player.session.startedAt) };
+    }
     const seconds = Math.min(now - watching.at, VIEWER_TICK_MS * 2) / 1000;
     watching.at = now;
     watching.watched += seconds;
@@ -828,7 +873,11 @@ export function startBot(player) {
   async function statsFor(period, now = Date.now()) {
     const [from, to] = periodRange(period, now);
     const stats = await computeStats({ entries: await history(), wishes: await wishlist?.entries(), from, to });
+    // Current server nicknames. Fetched one by one: the whole member list needs a
+    // privileged intent the bot does not have (it hung for two minutes).
     const guild = client.guilds.cache.get(guildId);
+    const ids = [...stats.perPerson.keys()].filter(key => /^\d{17,20}$/.test(key) && !guild?.members.cache.has(key));
+    await Promise.all(ids.map(id => guild?.members.fetch({ user: id, force: false }).catch(() => null)));
     const stored = stats.nameOf;
     stats.nameOf = key => guild?.members.cache.get(key)?.displayName ?? stored(key);
     return stats;
@@ -839,7 +888,6 @@ export function startBot(player) {
     const period = interaction.options.getString('obdobi') ?? 'vse';
     const user = interaction.options.getUser('kdo');
     await interaction.deferReply();
-    await client.guilds.cache.get(guildId)?.members.fetch().catch(() => {});
     const stats = await statsFor(period);
     const label = PERIODS[period].label;
     if (!user) return interaction.editReply({ embeds: [serverEmbed(stats, label)] });
@@ -857,10 +905,10 @@ export function startBot(player) {
     const month = `${parts.year}-${parts.month}`;
     const settings = await loadSettings();
     if (Number(parts.day) !== 1 || Number(parts.hour) < SUMMARY_HOUR || settings.summaryMonth === month) return;
-    await updateSettings({ summaryMonth: month });
     const stats = await statsFor('minuly', now);
-    if (!stats.titles) return;
-    await textChannel()?.send({ content: '📅 **Jak jsme koukali minulý měsíc**', embeds: [serverEmbed(stats, 'minulý měsíc')] });
+    // Marked done only once sent (or with nothing to send), so a failure retries next hour.
+    if (stats.titles) await textChannel().send({ content: '📅 **Jak jsme koukali minulý měsíc**', embeds: [serverEmbed(stats, 'minulý měsíc')] });
+    await updateSettings({ summaryMonth: month });
   }
 
   async function cpuUsage() {
@@ -877,7 +925,7 @@ export function startBot(player) {
   async function handleStatus(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const jellyfinStart = Date.now();
-    const jellyfin = await fetch(`${config.jellyfinUrl}/System/Info`, {
+    const jellyfin = await fetch(`${config.jellyfinUrl}/System/Info/Public`, {
       headers: { Authorization: authHeader }, signal: AbortSignal.timeout(5000),
     }).then(res => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))).then(
       info => `✅ ${info.Version}, odpověď za ${Date.now() - jellyfinStart} ms`,
@@ -892,7 +940,7 @@ export function startBot(player) {
     const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('🩺 Stav kina').addFields(
       { name: 'Vysílání', value: stream, inline: false },
       { name: 'Jellyfin', value: jellyfin, inline: true },
-      { name: 'Discord', value: `odezva ${client.ws.ping} ms`, inline: true },
+      { name: 'Discord', value: client.ws.ping >= 0 ? `odezva ${client.ws.ping} ms` : 'odezva se ještě měří', inline: true },
       {
         name: 'MiniPC',
         value: `CPU ${await cpuUsage()} % · volná paměť ${(os.freemem() / 2 ** 30).toFixed(1)} / ${(os.totalmem() / 2 ** 30).toFixed(1)} GB`
@@ -986,6 +1034,9 @@ export function startBot(player) {
         requireActive();
         return interaction.reply({ embeds: [nowPlayingEmbed()], flags: MessageFlags.Ephemeral });
       case 'stop': {
+        if (!player.active && cancelRecovery(`⏹ Zastaveno (${userName(interaction)}).`)) {
+          return interaction.reply({ content: '⏹ Zastaveno, kino už se znovu nepustí.', flags: MessageFlags.Ephemeral });
+        }
         requireActive();
         const item = player.item;
         await player.stop();
@@ -994,6 +1045,7 @@ export function startBot(player) {
       }
       case 'odejdi': {
         const item = player.item;
+        cancelRecovery('⏹ Zastaveno, odpojeno z hovoru.');
         await player.leave();
         if (item) await retireNowPlaying(item, '⏹ Zastaveno, odpojeno z hovoru.');
         return interaction.reply({ content: '👋 Odpojeno.', flags: MessageFlags.Ephemeral });
@@ -1002,11 +1054,18 @@ export function startBot(player) {
   }
 
   async function handleButton(interaction) {
+    const action = interaction.customId.slice(3);
+    // Stop on a stream that fell and waits to be started again.
+    if (action === 'stop' && recovery?.current?.message?.id === interaction.message.id && !player.active) {
+      cancelRecovery(`⏹ Zastaveno (${userName(interaction)}).`);
+      return interaction.deferUpdate();
+    }
     if (!player.active || nowPlaying?.message?.id !== interaction.message.id) {
       return interaction.reply({ content: 'Tohle přehrávání už skončilo.', flags: MessageFlags.Ephemeral });
     }
     await interaction.deferUpdate();
-    const action = interaction.customId.slice(3);
+    // The item may have ended while the click was on its way.
+    if (!player.active || nowPlaying?.message?.id !== interaction.message.id) return undefined;
     if (action === 'stop') {
       const item = player.item;
       await player.stop();
@@ -1062,6 +1121,7 @@ export function startBot(player) {
     aloneTimer ??= setTimeout(async () => {
       aloneTimer = null;
       const item = player.item;
+      cancelRecovery('👋 Všichni odešli, přehrávání zastaveno.');
       await player.leave().catch(error => console.error('Leave failed:', error));
       if (item) await retireNowPlaying(item, '👋 Všichni odešli, přehrávání zastaveno.');
     }, ALONE_LEAVE_MS);

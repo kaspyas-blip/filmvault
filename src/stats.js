@@ -94,8 +94,10 @@ async function metaFor(ids) {
   if (missing.length) {
     const items = await itemsMeta(missing).catch(error => {
       console.warn('Statistics: Jellyfin lookup failed:', error.message);
-      return [];
+      return null;
     });
+    // Jellyfin down: no genres this time, asked again next time.
+    if (!items) return metaCache.byId;
     for (const item of items) metaCache.byId.set(item.Id, item);
     // Episodes take their genres from the series.
     const series = [...new Set(items.filter(i => i.Type === 'Episode' && i.SeriesId).map(i => i.SeriesId))]
@@ -261,7 +263,7 @@ export function serverEmbed(stats, periodLabel) {
       `**${formatHours(stats.seconds)}** v kině · **${plural(stats.evenings.size, 'večer', 'večery', 'večerů')}**`,
       `✅ Dokoukáno ${plural(stats.films, 'film', 'filmy', 'filmů')} a ${plural(stats.episodes, 'díl', 'díly', 'dílů')}`
         + ` · ${plural(stats.titles, 'puštění', 'puštění', 'puštění')} celkem`,
-      `📝 Na seznamu přání ${stats.wishesOpen >= 2 && stats.wishesOpen <= 4 ? 'čekají' : 'čeká'}${plural(stats.wishesOpen, 'film', 'filmy', 'filmů')}`,
+      `📝 Na seznamu přání ${stats.wishesOpen >= 2 && stats.wishesOpen <= 4 ? 'čekají' : 'čeká'} ${plural(stats.wishesOpen, 'film', 'filmy', 'filmů')}`,
     ].join('\n'))
     .addFields(
       { name: '👀 Nejvíc času v kině', value: ranking(named(stats, top(stats.viewers)), formatHours), inline: true },

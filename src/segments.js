@@ -11,7 +11,7 @@ import { authHeader, durationSeconds, itemLabel, listEpisodes, mediaSource, stre
  * at a fixed offset is the shared part. Results are kept in data/segments.json.
  */
 const FILE = 'data/segments.json';
-const VERSION = 2;
+const VERSION = 3;
 const POINT_SECONDS = 4096 / 11025 / 3;
 // The intro is looked for in the first 10 minutes (at most 40 % of the episode),
 // the credits in the last 4.
@@ -27,13 +27,13 @@ const MAX_GAP_POINTS = Math.round(3.5 / POINT_SECONDS);
 // An intro this close to the start is skipped from the very beginning.
 const INTRO_FROM_START = 5;
 const FINGERPRINT_TIMEOUT_MS = 180_000;
-// Reads at most this many times real time, so a 4K file does not hog the disk while
-// another episode is streaming (10 minutes then take 15 s at least).
-const READ_RATE = '40';
 // Credits by picture: a sample counts as black when this share of its pixels is dark
 // (white text on black is ~95 %), and the run may break for this long (a logo card).
 const BLACK_PERCENT = 92;
 const BLACK_GAP_SECONDS = 3;
+// ...and the last seconds before them must be a lit scene: under this share dark.
+const LIT_BEFORE_SECONDS = 3;
+const LIT_PERCENT = 70;
 
 let store = null;
 let writing = Promise.resolve();
@@ -70,7 +70,7 @@ function fingerprint(item, start, length) {
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostats',
     '-headers', `Authorization: ${authHeader}\r\n`,
-    '-readrate', READ_RATE, '-ss', String(Math.max(0, Math.floor(start))), '-i', streamUrl(item, mediaSource(item)), '-t', String(Math.round(length)),
+    '-ss', String(Math.max(0, Math.floor(start))), '-i', streamUrl(item, mediaSource(item)), '-t', String(Math.round(length)),
     '-map', '0:a:0', '-vn', '-sn', '-dn', '-ac', '1',
     '-f', 'chromaprint', '-fp_format', 'raw', 'pipe:1',
   ];
@@ -118,7 +118,10 @@ export function sharedStretch(a, b) {
   }
   const votes = new Map();
   for (let i = 0; i < a.length; i++) {
-    for (const j of positions.get(a[i]) ?? []) votes.set(j - i, (votes.get(j - i) ?? 0) + 1);
+    const list = positions.get(a[i]);
+    // Points that repeat a lot (silence) would vote for every offset.
+    if (!list || list.length > 5) continue;
+    for (const j of list) votes.set(j - i, (votes.get(j - i) ?? 0) + 1);
   }
   const shifts = new Set();
   for (const [shift] of [...votes].sort((x, y) => y[1] - x[1]).slice(0, 6)) {
@@ -168,7 +171,8 @@ async function findIntro(item, neighbour) {
 }
 
 async function findCredits(item, neighbour) {
-  const tail = x => Math.max(0, (durationSeconds(x) ?? 0) - CREDITS_WINDOW);
+  // Whole seconds, as ffmpeg seeks to them.
+  const tail = x => Math.max(0, Math.floor((durationSeconds(x) ?? 0) - CREDITS_WINDOW));
   const [from, neighbourFrom] = [tail(item), tail(neighbour)];
   if (!from || !neighbourFrom) return null;
   const [a, b] = await Promise.all([
@@ -194,7 +198,7 @@ function findCreditsByPicture(item) {
     '-hide_banner', '-loglevel', 'info', '-nostats', '-threads', '2',
     '-headers', `Authorization: ${authHeader}\r\n`,
     ...(config.hwDecode ? ['-hwaccel', config.hwDecode] : []),
-    '-readrate', READ_RATE, '-ss', String(from), '-i', streamUrl(item, mediaSource(item)), '-t', String(CREDITS_WINDOW),
+    '-ss', String(from), '-i', streamUrl(item, mediaSource(item)), '-t', String(CREDITS_WINDOW),
     '-map', '0:v:0', '-an', '-sn', '-dn',
     '-vf', 'fps=2,crop=iw:ih*0.6,scale=160:-2,blackframe=amount=0:threshold=32', '-f', 'null', '-',
   ];
@@ -208,7 +212,7 @@ function findCreditsByPicture(item) {
       rest = lines.pop();
       for (const line of lines) {
         const m = /pblack:(\d+).*?\bt:([\d.]+)/.exec(line);
-        if (m) samples.push({ t: Number(m[2]), black: Number(m[1]) >= BLACK_PERCENT });
+        if (m) samples.push({ t: Number(m[2]), dark: Number(m[1]), black: Number(m[1]) >= BLACK_PERCENT });
       }
     });
     ff.once('error', reject);
@@ -228,7 +232,12 @@ function findCreditsByPicture(item) {
         last = t;
       }
       close();
-      resolve(best ? [best.start, best.end + 0.5].map(t => Math.round((from + t) * 10) / 10) : null);
+      // The credits must follow a lit scene. When the picture was dark before them too
+      // (a night scene running into them), their start is unsure, and the episode is
+      // better not cut there.
+      const before = best && samples.filter(s => s.t >= best.start - LIT_BEFORE_SECONDS && s.t < best.start);
+      if (!before?.length || before.some(s => s.dark >= LIT_PERCENT)) return resolve(null);
+      resolve([best.start, best.end + 0.5].map(t => Math.round((from + t) * 10) / 10));
     });
   });
 }
@@ -239,15 +248,22 @@ async function analyse(item) {
   // The next episode first, the previous one when there is no next (or no match).
   const neighbours = [episodes[index + 1], episodes[index - 1]].filter(Boolean);
   const result = { v: VERSION, intro: null, credits: null, at: Date.now() };
+  // A step that failed (Jellyfin or ffmpeg hiccup) leaves the result unsaved, so the
+  // episode is analysed again next time instead of keeping "nothing found".
+  let failed = false;
+  const attempt = (promise, what) => promise.catch(error => {
+    failed = true;
+    console.warn(`${what} search failed:`, error.message);
+    return null;
+  });
   for (const stub of neighbours) {
     const neighbour = { ...stub, MediaSources: stub.MediaSources ?? [{ Id: stub.Id }] };
-    result.intro ??= await findIntro(item, neighbour).catch(error => console.warn('Intro search failed:', error.message));
-    result.credits ??= await findCredits(item, neighbour).catch(error => console.warn('Credits search failed:', error.message));
+    result.intro ??= await attempt(findIntro(item, neighbour), 'Intro');
+    result.credits ??= await attempt(findCredits(item, neighbour), 'Credits');
     if (result.intro && result.credits) break;
   }
-  result.intro ??= null;
-  result.credits ??= await findCreditsByPicture(item).catch(error => console.warn('Credits search failed:', error.message)) ?? null;
-  return result;
+  result.credits ??= await attempt(findCreditsByPicture(item), 'Credits');
+  return { result, failed };
 }
 
 /** What is known already for this episode, or undefined. */
@@ -268,9 +284,11 @@ export async function episodeSegments(item) {
   if (pending.has(item.Id)) return pending.get(item.Id);
   const job = queue.then(async () => {
     const started = Date.now();
-    const result = await analyse(item);
-    (await load())[item.Id] = result;
-    await save();
+    const { result, failed } = await analyse(item);
+    if (!failed) {
+      (await load())[item.Id] = result;
+      await save();
+    }
     const intro = result.intro ? `${result.intro[0]}-${result.intro[1]}s` : 'none';
     const credits = result.credits ? `${result.credits[0]}-${result.credits[1]}s` : 'none';
     console.log(`Segments of ${itemLabel(item)}: intro ${intro}, credits ${credits} (${Date.now() - started} ms)`);

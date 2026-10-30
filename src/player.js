@@ -26,6 +26,8 @@ const INTRO_SKIP_MIN_LEFT = 5;
 const TICK_MS = 250;
 // No frame from ffmpeg for this long while playing: the stream is restarted where it was.
 const STALL_MS = 15_000;
+// Restarts after a stall in a row before the stream counts as failed.
+const STALL_RESTARTS = 3;
 const JOIN_TIMEOUT_MS = 20_000;
 const HARDWARE_RETRY_WINDOW_MS = 15_000;
 // ffmpeg forces a keyframe every second; sending starts at the second one after a restart.
@@ -229,6 +231,7 @@ function sessionView(conn, session) {
   view.sendVideoFrame = (frame, frametime) => {
     if (signal.aborted) return undefined;
     session.lastFrameAt = Date.now();
+    session.mediaMs = (session.mediaMs ?? 0) + frametime;
     return conn.sendVideoFrame(frame, frametime);
   };
   return view;
@@ -347,8 +350,10 @@ export class Player extends EventEmitter {
   position() {
     if (!this.item) return 0;
     if (this.paused || !this.session) return this.pausedPosition;
-    const { startSeconds, startedAt } = this.session;
-    return startedAt ? startSeconds + (Date.now() - startedAt) / 1000 : startSeconds;
+    // The film's own time of the frames sent: ffmpeg starts at the whole second, and
+    // a hiccup in its output does not move the position on (the credits cut relies on it).
+    const { startSeconds, mediaMs } = this.session;
+    return mediaMs ? Math.floor(startSeconds) + mediaMs / 1000 : startSeconds;
   }
 
   get audioTrack() {
@@ -363,7 +368,8 @@ export class Player extends EventEmitter {
   }
 
   /** countdown: label of the episode that follows (see this.countdown), or null. */
-  play({ item, channelId, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null }) {
+  /** autoSkipIntro: skip this item's intro by itself (see tick). */
+  play({ item, channelId, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null, autoSkipIntro = false }) {
     return this.run(async () => {
       const source = mediaSource(item);
       const subtitle = await this.prepareSubtitle(item, source, subtitleIndex);
@@ -372,7 +378,8 @@ export class Player extends EventEmitter {
       await this.ensureVoice(channelId);
       clearTimeout(this.idleTimer);
       Object.assign(this, {
-        item, source, audioIndex, subtitleIndex, subtitle, countdown, itemStartedAt: Date.now(), segments: null, introSkipped: false,
+        item, source, audioIndex, subtitleIndex, subtitle, countdown, itemStartedAt: Date.now(), segments: null,
+        introSkipped: false, autoSkipIntro, stallRestarts: 0,
       });
       this.startSession(this.clamp(startSeconds));
     });
@@ -549,7 +556,29 @@ export class Player extends EventEmitter {
     if (!this.item || !session || this.paused) return;
     const position = this.position();
     this.writeOverlay(this.overlayFor(session, position));
-    if (!session.startedAt || session.ending) return;
+    if (session.ending) return;
+    // Nothing from ffmpeg for a while (also when it never started): start it again
+    // where it was, and after a few tries in a row let the bot's recovery take over.
+    const lastFrame = session.lastFrameAt ?? session.createdAt;
+    if (Date.now() - lastFrame > STALL_MS) {
+      session.ending = true;
+      const item = this.item;
+      this.stallRestarts = (this.stallRestarts ?? 0) + 1;
+      console.warn(`No video from ffmpeg for ${Math.round((Date.now() - lastFrame) / 1000)} s, restarting at ${Math.round(position)}s`);
+      this.run(async () => {
+        if (this.session !== session) return;
+        if (this.stallRestarts > STALL_RESTARTS) {
+          this.reset();
+          this.emit('failed', item, 'vysílání se opakovaně zaseklo', position);
+          return;
+        }
+        this.endSession({ keepLive: true });
+        this.startSession(position);
+      });
+      return;
+    }
+    if (!session.mediaMs) return;
+    if (session.mediaMs > STALL_MS) this.stallRestarts = 0;
     const { endAt, duration } = this;
     if (endAt && duration && endAt < duration && position >= endAt) {
       session.ending = true;
@@ -565,30 +594,30 @@ export class Player extends EventEmitter {
     const intro = this.segments?.intro;
     if (intro && this.autoSkipIntro && !this.introSkipped && position >= intro[0] && position < intro[1] - INTRO_SKIP_MIN_LEFT) {
       this.introSkipped = true;
-      const item = this.item;
-      console.log(`Skipping the intro of ${itemLabel(item)} to ${Math.round(intro[1])}s`);
-      this.seek(intro[1]).then(() => this.emit('introSkipped', item)).catch(error => console.error('Intro skip failed:', error));
-      return;
-    }
-    const lastFrame = session.lastFrameAt ?? session.startedAt;
-    if (Date.now() - lastFrame > STALL_MS) {
       session.ending = true;
-      const at = Math.max(0, position - (Date.now() - lastFrame) / 1000);
-      console.warn(`No video from ffmpeg for ${Math.round((Date.now() - lastFrame) / 1000)} s, restarting at ${Math.round(at)}s`);
+      const item = this.item;
+      // Queued: by the time it runs another item may be playing, then it does nothing.
       this.run(async () => {
         if (this.session !== session) return;
+        console.log(`Skipping the intro of ${itemLabel(item)} to ${Math.round(intro[1])}s`);
         this.endSession({ keepLive: true });
-        this.startSession(at);
-      });
+        this.startSession(intro[1]);
+        this.emit('introSkipped', item);
+      }).catch(error => console.error('Intro skip failed:', error));
     }
   }
 
   startSession(startSeconds, { softwareFallback = false } = {}) {
     const video = this.source.MediaStreams.find(s => s.Type === 'Video');
-    // ffmpeg needs the file to exist; nobody reads it before the spawn below.
-    this.overlayText = this.overlayFor({ startSeconds }, startSeconds);
-    mkdirSync('tmp', { recursive: true });
-    writeFileSync(OVERLAY_FILE, this.overlayText);
+    // ffmpeg needs the file to exist. The old ffmpeg may still hold it for a moment;
+    // then the old text stays and the next tick replaces it.
+    this.overlayText = null;
+    this.writeOverlay(this.overlayFor({ startSeconds }, startSeconds));
+    if (this.overlayText === null) {
+      try {
+        writeFileSync(OVERLAY_FILE, '', { flag: 'a' });
+      } catch {}
+    }
     const args = buildFfmpegArgs({
       url: streamUrl(this.item, this.source),
       videoCodec: video?.Codec ?? null,

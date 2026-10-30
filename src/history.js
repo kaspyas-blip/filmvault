@@ -85,7 +85,7 @@ export async function recordWatch({ id, label, by, byId, startedAt, position, du
     id, label, by, byId, startedAt, endedAt: Date.now(), position: Math.round(position), duration, finished, watched: Math.round(watched), viewers,
   };
   const last = list[0];
-  if (last?.id === id && entry.endedAt - last.endedAt < MERGE_MS) {
+  if (last?.id === id && !last.manual && entry.endedAt - last.endedAt < MERGE_MS) {
     list[0] = {
       ...entry, startedAt: last.startedAt, by: last.by, byId: last.byId ?? byId, finished: finished || last.finished,
       watched: (last.watched ?? 0) + entry.watched, viewers: mergeViewers(last.viewers, viewers),
