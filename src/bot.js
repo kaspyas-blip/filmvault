@@ -2,17 +2,21 @@ import {
   ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, GatewayIntentBits,
   MessageFlags, SlashCommandBuilder, StringSelectMenuBuilder,
 } from 'discord.js';
-import { readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import { config } from './config.js';
 import { keepHelpLast } from './help.js';
 import { addWatch, entryKey, history, recordWatch, removeWatch } from './history.js';
 import {
-  SORTS, audioTracks, defaultTracks, downloadPoster, durationSeconds, getItem, isCzech, itemLabel, listEpisodes, listGenres,
+  SORTS, audioTracks, authHeader, defaultTracks, downloadPoster, durationSeconds, getItem, isCzech, itemLabel, listEpisodes, listGenres,
   listLibrary, listSeasons, mediaSource, nextEpisode, resumeSeconds, saveProgress, searchItems, subtitleTracks, trackLabel,
 } from './jellyfin.js';
 import { movieInfoEnabled } from './movieinfo.js';
 import { UserError } from './player.js';
 import { QUALITIES, loadQuality, qualityLabel, saveQuality } from './quality.js';
+import { episodeSegments } from './segments.js';
+import { SOUND_MODES, loadSettings, updateSettings } from './settings.js';
+import { PERIODS, computeStats, periodRange, personEmbed, personKeyFor, serverEmbed } from './stats.js';
 import { formatTime, parseTime, parseWhen } from './time.js';
 import { createWishlist } from './wishlist.js';
 
@@ -32,6 +36,18 @@ const WATCHED_TAIL = 0.92;
 const POSTER_FILE = 'poster.jpg';
 const AUTOPLAY_FILE = 'data/autoplay.json';
 const AUTOPLAY_MAX_AGE_MS = 10 * 60_000;
+// What is playing, kept on disk so a crashed or restarted bot can clean up its old
+// message and carry on where it was.
+const NOW_PLAYING_FILE = 'data/nowplaying.json';
+const NOW_PLAYING_SAVE_MS = 15_000;
+// People in the voice room are counted this often for the statistics.
+const VIEWER_TICK_MS = 30_000;
+// A failed stream is started again where it fell, this many times within the window.
+const RECOVERY_ATTEMPTS = 3;
+const RECOVERY_WINDOW_MS = 10 * 60_000;
+const RECOVERY_DELAYS_MS = [3000, 15_000, 45_000];
+const SUMMARY_CHECK_MS = 60 * 60_000;
+const SUMMARY_HOUR = 12;
 
 const commands = [
   new SlashCommandBuilder().setName('pust').setDescription('Pustí film nebo díl do kina')
@@ -50,6 +66,14 @@ const commands = [
   new SlashCommandBuilder().setName('kvalita').setDescription('Změní kvalitu vysílání pro všechny (bez volby ukáže aktuální)')
     .addStringOption(o => o.setName('uroven').setDescription('Nižší kvalita pomůže, když se obraz seká')
       .addChoices(...Object.keys(QUALITIES).map(key => ({ name: qualityLabel(key), value: key })))),
+  new SlashCommandBuilder().setName('hlasitost').setDescription('Režim zvuku pro všechny (bez volby ukáže aktuální)')
+    .addStringOption(o => o.setName('rezim').setDescription('Vyrovnaný: dialogy hlasitější, výbuchy tišší')
+      .addChoices(...Object.entries(SOUND_MODES).map(([value, name]) => ({ name, value })))),
+  new SlashCommandBuilder().setName('statistiky').setDescription('Kdo kouká nejvíc, co nejčastěji, rekordy a odznaky')
+    .addUserOption(o => o.setName('kdo').setDescription('Osobní statistiky tohoto člověka'))
+    .addStringOption(o => o.setName('obdobi').setDescription('Za jaké období (výchozí celkově)')
+      .addChoices(...Object.entries(PERIODS).map(([value, { label }]) => ({ name: label, value })))),
+  new SlashCommandBuilder().setName('stav').setDescription('Jak se daří kinu: MiniPC, Jellyfin, vysílání'),
   new SlashCommandBuilder().setName('filmy').setDescription('Vypíše filmy v Jellyfinu, volitelně s filtrem')
     .addStringOption(o => o.setName('zanr').setDescription('Jen tento žánr').setAutocomplete(true))
     .addStringOption(o => o.setName('rok').setDescription('Rok nebo rozsah, např. 2005 nebo 1990-1999'))
@@ -83,8 +107,12 @@ export function startBot(player) {
   const itemCache = new Map();
   const czechListCache = new Map();
   let genreCache = null;
-  let nowPlaying = null; // { message, requestedBy, resumedFrom }
+  let nowPlaying = null; // { message, requestedBy, requestedById, resumedFrom, poster, next, skipNext }
   let lastTracks = null; // track languages of the item that just stopped, for the next episode
+  // Played time and who was in the voice room, for the item now playing (statistics).
+  let watching = null; // { itemId, watched, viewers: { id: { name, seconds } }, at }
+  const recoveries = new Map(); // item ID -> times it was started again after failing
+  const startedAt = Date.now();
   let aloneTimer = null;
   let guildId = null;
   let textChannelId = null;
@@ -177,6 +205,11 @@ export function startBot(player) {
     )];
     const extra = [];
     if (nowPlaying?.resumedFrom) extra.push(button('restart', '⏮ Pustit od začátku'));
+    if (player.segments?.intro) {
+      extra.push(player.autoSkipIntro
+        ? button('keepintro', '⏭ Úvody se přeskakují · vypnout')
+        : button('skipintro', '⏭ Přeskočit úvod', ButtonStyle.Success));
+    }
     if (nowPlaying?.next) {
       extra.push(nowPlaying.skipNext
         ? button('next', '▶ Pak pustit další díl')
@@ -195,7 +228,11 @@ export function startBot(player) {
       .addFields(
         { name: 'Stav', value: player.paused ? '⏸ Pozastaveno' : '▶ Hraje', inline: true },
         { name: 'Čas', value: `${formatTime(player.position())} / ${formatTime(player.duration)}`, inline: true },
-        { name: 'Zvuk', value: player.audioTrack ? trackLabel(player.audioTrack) : '—', inline: false },
+        {
+          name: 'Zvuk',
+          value: (player.audioTrack ? trackLabel(player.audioTrack) : '—') + (player.sound === 'night' ? ' · 🌙 vyrovnaný' : ''),
+          inline: false,
+        },
         { name: 'Titulky', value: player.subtitleTrack ? trackLabel(player.subtitleTrack) : 'vypnuto', inline: false },
         { name: 'Kvalita', value: qualityLabel(player.quality), inline: false },
       );
@@ -212,11 +249,77 @@ export function startBot(player) {
     return new EmbedBuilder().setColor(0x4e5058).setTitle(itemLabel(item)).setDescription(text);
   }
 
-  async function retireNowPlaying(item, text) {
+  async function retireNowPlaying(item, text, { remove = false } = {}) {
     const message = nowPlaying?.message;
     nowPlaying = null;
+    await forgetNowPlaying();
     if (!message) return;
-    await message.edit({ content: '', embeds: [endedEmbed(item, text)], components: [], attachments: [] }).catch(() => {});
+    if (remove) await message.delete().catch(() => {});
+    else await message.edit({ content: '', embeds: [endedEmbed(item, text)], components: [], attachments: [] }).catch(() => {});
+  }
+
+  // ---- Surviving crashes and restarts -------------------------------------
+
+  async function saveNowPlaying() {
+    const current = nowPlaying;
+    if (!current?.message || !player.active) return;
+    const state = {
+      messageId: current.message.id,
+      itemId: player.item.Id,
+      position: Math.round(player.position()),
+      by: current.requestedBy,
+      byId: current.requestedById ?? null,
+      audioIndex: player.audioIndex,
+      subtitleIndex: player.subtitleIndex,
+      savedAt: Date.now(),
+    };
+    await mkdir('data', { recursive: true });
+    await writeFile(`${NOW_PLAYING_FILE}.tmp`, JSON.stringify(state));
+    await rename(`${NOW_PLAYING_FILE}.tmp`, NOW_PLAYING_FILE);
+  }
+
+  function forgetNowPlaying() {
+    return rm(NOW_PLAYING_FILE, { force: true }).catch(() => {});
+  }
+
+  /**
+   * Now-playing messages whose buttons no longer work (the bot died or restarted
+   * while something played) are deleted, so nobody clicks on a dead film.
+   */
+  async function deleteDeadMessages(keepId = null) {
+    const channel = textChannel();
+    const recent = await channel?.messages.fetch({ limit: 50 }).catch(() => null);
+    if (!recent) return;
+    const dead = recent.filter(m => m.author.id === client.user.id && m.id !== keepId
+      && m.components.some(row => row.components?.some(c => c.customId?.startsWith('fv:'))));
+    for (const message of dead.values()) await message.delete().catch(() => {});
+    if (dead.size) console.log(`Deleted ${dead.size} now-playing message(s) left from before the restart`);
+  }
+
+  /** Starts a failed item again where it fell, a few times, then gives up as before. */
+  async function recoverPlayback(item, message, position) {
+    const now = Date.now();
+    const attempts = (recoveries.get(item.Id) ?? []).filter(at => now - at < RECOVERY_WINDOW_MS);
+    const current = nowPlaying;
+    if (attempts.length >= RECOVERY_ATTEMPTS || !peopleInVoice()) {
+      return retireNowPlaying(item, `⚠️ Přehrávání spadlo v čase ${formatTime(position)}: ${message}\nZkus znovu \`/pust\`, naváže od místa, kde to spadlo.`);
+    }
+    recoveries.set(item.Id, [...attempts, now]);
+    const tracks = { audioIndex: lastTracks?.audio?.Index ?? null, subtitleIndex: lastTracks?.subtitle?.Index ?? null };
+    console.warn(`Recovering ${itemLabel(item)} at ${Math.round(position)}s (attempt ${attempts.length + 1}): ${message}`);
+    await new Promise(resolve => setTimeout(resolve, RECOVERY_DELAYS_MS[attempts.length]));
+    // Someone started something else meanwhile: only the dead message goes.
+    if (player.active || nowPlaying !== current) return current?.message?.delete().catch(() => {});
+    try {
+      const fresh = await getItem(item.Id);
+      await beginPlayback(fresh, { startSeconds: Math.max(0, position - 5), tracks, byId: current?.requestedById },
+        current?.requestedBy ?? 'FilmVault', payload => textChannel().send(payload),
+        `⚠️ Vysílání spadlo, navázáno od ${formatTime(Math.max(0, position - 5))}.`);
+      if (current?.message) await current.message.delete().catch(() => {});
+    } catch (error) {
+      console.error('Recovery failed:', error.message);
+      return recoverPlayback(item, error.message, position);
+    }
   }
 
   /**
@@ -270,20 +373,38 @@ export function startBot(player) {
   }
 
   // Expects a deferred reply; it becomes the now-playing message.
-  function startPlayback(interaction, item, options) {
-    return beginPlayback(item, options, userName(interaction), payload => interaction.editReply(payload));
+  function startPlayback(interaction, item, options = {}) {
+    return beginPlayback(item, { ...options, byId: interaction.user.id }, userName(interaction), payload => interaction.editReply(payload));
+  }
+
+  /**
+   * Intro and credits come from segments.js; the first episode of an evening may get
+   * them a few seconds after it started. The next episode is analysed meanwhile.
+   */
+  function loadSegments(item, next) {
+    episodeSegments(item)
+      .then(async segments => {
+        if (!segments || player.item?.Id !== item.Id) return;
+        player.setSegments(item, segments);
+        await refreshNowPlaying();
+      })
+      .catch(error => console.warn('Segment detection failed:', error.message))
+      .then(() => next && getItem(next.Id).then(episodeSegments))
+      .catch(error => console.warn('Segment detection of the next episode failed:', error.message));
   }
 
   /**
    * startSeconds null = resume where it was left off. Tracks not chosen explicitly
-   * default to Czech audio, else Czech subtitles (see defaultTracks).
+   * default to Czech audio, else Czech subtitles (see defaultTracks). byId: Discord ID
+   * of requestedBy; note: extra line for the message.
    */
-  async function beginPlayback(item, { startSeconds = null, zvuk = null, titulky = null, tracks = null } = {}, requestedBy, send) {
+  async function beginPlayback(item, { startSeconds = null, zvuk = null, titulky = null, tracks = null, byId = null } = {}, requestedBy, send, note = '') {
     const source = mediaSource(item);
     const defaults = tracks ?? defaultTracks(source, zvuk && zvuk !== SUBTITLES_OFF ? Number(zvuk) : null);
     const resumedFrom = startSeconds === null ? resumeSeconds(item) : null;
     const previous = player.item;
     const next = await findNextEpisode(item);
+    player.autoSkipIntro = !!item.SeriesId && (await loadSettings()).skipIntro.includes(item.SeriesId);
     await player.play({
       countdown: next ? itemLabel(next) : null,
       item,
@@ -294,15 +415,17 @@ export function startBot(player) {
     });
     if (previous) await retireNowPlaying(previous, 'Přepnuto na jiný film.');
 
+    loadSegments(item, next);
     const poster = await downloadPoster(item);
-    nowPlaying = { message: null, requestedBy, resumedFrom, poster, next, skipNext: false };
+    nowPlaying = { message: null, requestedBy, requestedById: byId, resumedFrom, poster, next, skipNext: false };
     const resumeNote = resumedFrom ? ` Navazuje od ${formatTime(resumedFrom)}, kde jste skončili.` : '';
     nowPlaying.message = await send({
-      content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}`,
+      content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}${note ? `\n${note}` : ''}`,
       embeds: [nowPlayingEmbed({ poster: poster && `attachment://${POSTER_FILE}` })],
       components: controls(),
       files: poster ? [new AttachmentBuilder(poster, { name: POSTER_FILE })] : [],
     });
+    await saveNowPlaying().catch(error => console.warn('Could not save now playing:', error.message));
     checkAlone();
   }
 
@@ -358,7 +481,8 @@ export function startBot(player) {
     const channel = textChannel();
     try {
       const fresh = await getItem(next.Id);
-      await beginPlayback(fresh, { tracks: carryTracks(mediaSource(fresh), lastTracks) }, current.requestedBy, payload => channel.send(payload));
+      await beginPlayback(fresh, { tracks: carryTracks(mediaSource(fresh), lastTracks), byId: current.requestedById },
+        current.requestedBy, payload => channel.send(payload));
     } catch (error) {
       await player.closeLive();
       await channel?.send(`Další díl se nepodařilo pustit: ${error.message}`).catch(() => {});
@@ -368,13 +492,41 @@ export function startBot(player) {
 
   // ---- Progress -----------------------------------------------------------
 
-  async function storeProgress({ item, position, finished, startedAt, audio, subtitle }, requestedBy) {
+  /** Adds the time since the last count to the item playing and to everyone in the voice room. */
+  function countViewers() {
+    const now = Date.now();
+    if (!player.active || player.paused || !player.session?.startedAt) {
+      if (watching) watching.at = now;
+      return;
+    }
+    if (watching?.itemId !== player.item.Id) watching = { itemId: player.item.Id, watched: 0, viewers: {}, at: now };
+    const seconds = Math.min(now - watching.at, VIEWER_TICK_MS * 2) / 1000;
+    watching.at = now;
+    watching.watched += seconds;
+    const channel = client.channels.cache.get(voiceChannelId);
+    const streamerId = player.streamer.client.user?.id;
+    for (const member of channel?.members?.values() ?? []) {
+      if (member.user.bot || member.id === streamerId) continue;
+      const viewer = watching.viewers[member.id] ??= { name: member.displayName, seconds: 0 };
+      viewer.name = member.displayName;
+      viewer.seconds += seconds;
+    }
+  }
+
+  async function storeProgress({ item, position, finished, startedAt, audio, subtitle }, requestedBy, requestedById) {
     itemCache.delete(item.Id);
     lastTracks = { audio, subtitle };
+    if (watching?.itemId === item.Id) countViewers();
+    const seen = watching?.itemId === item.Id ? watching : { watched: 0, viewers: {} };
+    watching = null;
+    for (const viewer of Object.values(seen.viewers)) viewer.seconds = Math.round(viewer.seconds);
     const duration = durationSeconds(item);
     const watched = finished || (duration && position >= duration * WATCHED_TAIL);
     await Promise.all([
-      recordWatch({ id: item.Id, label: itemLabel(item), by: requestedBy, startedAt, position, duration, finished: !!watched }),
+      recordWatch({
+        id: item.Id, label: itemLabel(item), by: requestedBy, byId: requestedById, startedAt, position, duration, finished: !!watched,
+        watched: seen.watched, viewers: seen.viewers,
+      }),
       position >= 60 || watched
         ? saveProgress(item.Id, { seconds: position, played: !!watched }).catch(error => console.error('Saving progress failed:', error.message))
         : null,
@@ -660,6 +812,98 @@ export function startBot(player) {
     await interaction.editReply(`📺 Kvalita: **${qualityLabel(wanted)}** (${userName(interaction)}).${note}`);
   }
 
+  async function handleSound(interaction) {
+    const wanted = interaction.options.getString('rezim');
+    if (!wanted || wanted === player.sound) {
+      return interaction.reply({ content: `🔊 Režim zvuku: ${SOUND_MODES[player.sound]}`, flags: MessageFlags.Ephemeral });
+    }
+    await interaction.deferReply();
+    await player.setSound(wanted);
+    await updateSettings({ sound: wanted });
+    await refreshNowPlaying();
+    const note = player.active && !player.paused ? ' Obraz se na chvilku zastaví a naváže.' : '';
+    await interaction.editReply(`🔊 Režim zvuku: **${SOUND_MODES[wanted]}** (${userName(interaction)}).${note}`);
+  }
+
+  async function statsFor(period, now = Date.now()) {
+    const [from, to] = periodRange(period, now);
+    const stats = await computeStats({ entries: await history(), wishes: await wishlist?.entries(), from, to });
+    const guild = client.guilds.cache.get(guildId);
+    const stored = stats.nameOf;
+    stats.nameOf = key => guild?.members.cache.get(key)?.displayName ?? stored(key);
+    return stats;
+  }
+
+  /** Everyone's ranking in public (we are competitive); with `kdo` one person's card. */
+  async function handleStats(interaction) {
+    const period = interaction.options.getString('obdobi') ?? 'vse';
+    const user = interaction.options.getUser('kdo');
+    await interaction.deferReply();
+    await client.guilds.cache.get(guildId)?.members.fetch().catch(() => {});
+    const stats = await statsFor(period);
+    const label = PERIODS[period].label;
+    if (!user) return interaction.editReply({ embeds: [serverEmbed(stats, label)] });
+    const member = interaction.options.getMember('kdo');
+    const key = personKeyFor(stats, user.id, [member?.displayName, user.username, user.globalName]);
+    return interaction.editReply({ embeds: [personEmbed(stats, key, member?.displayName ?? user.username, label)] });
+  }
+
+  /** First of the month: last month's statistics in the cinema room, once. */
+  async function postMonthlySummary() {
+    const now = Date.now();
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date(now)).map(p => [p.type, p.value]));
+    const month = `${parts.year}-${parts.month}`;
+    const settings = await loadSettings();
+    if (Number(parts.day) !== 1 || Number(parts.hour) < SUMMARY_HOUR || settings.summaryMonth === month) return;
+    await updateSettings({ summaryMonth: month });
+    const stats = await statsFor('minuly', now);
+    if (!stats.titles) return;
+    await textChannel()?.send({ content: '📅 **Jak jsme koukali minulý měsíc**', embeds: [serverEmbed(stats, 'minulý měsíc')] });
+  }
+
+  async function cpuUsage() {
+    const sample = () => os.cpus().reduce((sum, cpu) => {
+      const total = Object.values(cpu.times).reduce((a, b) => a + b, 0);
+      return { idle: sum.idle + cpu.times.idle, total: sum.total + total };
+    }, { idle: 0, total: 0 });
+    const a = sample();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const b = sample();
+    return Math.round(100 * (1 - (b.idle - a.idle) / Math.max(1, b.total - a.total)));
+  }
+
+  async function handleStatus(interaction) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const jellyfinStart = Date.now();
+    const jellyfin = await fetch(`${config.jellyfinUrl}/System/Info`, {
+      headers: { Authorization: authHeader }, signal: AbortSignal.timeout(5000),
+    }).then(res => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))).then(
+      info => `✅ ${info.Version}, odpověď za ${Date.now() - jellyfinStart} ms`,
+      error => `❌ ${error.message}`,
+    );
+    const report = player.liveConn?.lastReport;
+    const stream = !player.active ? 'nic nehraje'
+      : `${player.paused ? '⏸' : '▶'} ${itemLabel(player.item)} · ${formatTime(player.position())}`
+        + (report ? `\nza poslední minutu: ${report.frames} snímků, ${report.gaps} zaseknutí, Discord chtěl znovu ${report.nacked} paketů`
+          + (report.remb ? `, odhad linky ${Math.round(report.remb / 1000)} kbit/s` : '') : '');
+    const memory = process.memoryUsage().rss / 2 ** 20;
+    const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('🩺 Stav kina').addFields(
+      { name: 'Vysílání', value: stream, inline: false },
+      { name: 'Jellyfin', value: jellyfin, inline: true },
+      { name: 'Discord', value: `odezva ${client.ws.ping} ms`, inline: true },
+      {
+        name: 'MiniPC',
+        value: `CPU ${await cpuUsage()} % · volná paměť ${(os.freemem() / 2 ** 30).toFixed(1)} / ${(os.totalmem() / 2 ** 30).toFixed(1)} GB`
+          + `\nbot: ${Math.round(memory)} MB, běží ${formatTime((Date.now() - startedAt) / 1000)}`,
+        inline: false,
+      },
+      { name: 'Nastavení', value: `📺 ${qualityLabel(player.quality)}\n🔊 ${SOUND_MODES[player.sound]}`, inline: false },
+    );
+    return interaction.editReply({ embeds: [embed] });
+  }
+
   async function handleTrack(interaction, kind) {
     requireActive();
     const value = interaction.options.getString('stopa', true);
@@ -689,7 +933,9 @@ export function startBot(player) {
     const duration = durationSeconds(item);
     const finished = !parsed || (!!duration && parsed.seconds >= duration * WATCHED_TAIL);
     const position = finished ? duration ?? 0 : parsed.seconds;
-    await addWatch({ id: item.Id, label: itemLabel(item), by: userName(interaction), endedAt, position, duration, finished });
+    await addWatch({ id: item.Id, label: itemLabel(item), by: userName(interaction), byId: interaction.user.id, endedAt, position, duration, finished });
+    // Jellyfin shows it as seen (or where to go on) too.
+    await saveProgress(item.Id, { seconds: position, played: finished }).catch(error => console.error('Saving progress failed:', error.message));
     wishlist?.refresh();
     const state = finished ? 'jako dokoukané' : `se skončením v ${formatTime(position)}`;
     return interaction.editReply(`✍️ Zapsáno do historie: **${itemLabel(item)}**, ${formatDate(endedAt)}, ${state}. Odebrat jde v /videli.`);
@@ -713,6 +959,12 @@ export function startBot(player) {
         return handleSeek(interaction);
       case 'kvalita':
         return handleQuality(interaction);
+      case 'hlasitost':
+        return handleSound(interaction);
+      case 'statistiky':
+        return handleStats(interaction);
+      case 'stav':
+        return handleStatus(interaction);
       case 'zvuk':
         return handleTrack(interaction, 'audio');
       case 'titulky':
@@ -763,8 +1015,19 @@ export function startBot(player) {
     if (action === 'restart') {
       nowPlaying.resumedFrom = null;
       await player.seek(0);
+    } else if (action === 'skipintro' || action === 'keepintro') {
+      // Remembered per series: once skipped, every later episode skips it by itself.
+      const seriesId = player.item.SeriesId;
+      const settings = await loadSettings();
+      const skip = action === 'skipintro';
+      await updateSettings({ skipIntro: [...settings.skipIntro.filter(id => id !== seriesId), ...(skip ? [seriesId] : [])] });
+      player.autoSkipIntro = skip;
+      const intro = player.segments?.intro;
+      if (skip && intro && player.position() < intro[1] - 1) {
+        player.introSkipped = true;
+        await player.seek(intro[1]);
+      }
     } else if (action === 'nonext' || action === 'next') {
-      // The countdown is drawn into the video, so switching it restarts the stream.
       nowPlaying.skipNext = action === 'nonext';
       await player.setCountdown(nowPlaying.skipNext ? null : itemLabel(nowPlaying.next));
     } else if (action === 'toggle') await (player.paused ? player.resume() : player.pause());
@@ -805,13 +1068,20 @@ export function startBot(player) {
   }
 
   player.on('stopped', event => {
-    storeProgress(event, nowPlaying?.requestedBy).catch(error => console.error('Recording progress failed:', error));
+    storeProgress(event, nowPlaying?.requestedBy, nowPlaying?.requestedById).catch(error => console.error('Recording progress failed:', error));
   });
   player.on('ended', item => {
     continueWithNext(item).catch(error => console.error('Finishing playback failed:', error));
   });
-  player.on('failed', (item, message, position) =>
-    retireNowPlaying(item, `⚠️ Přehrávání spadlo v čase ${formatTime(position)}: ${message}\nZkus znovu \`/pust\`, naváže od místa, kde to spadlo.`));
+  player.on('failed', (item, message, position) => {
+    recoverPlayback(item, message, position).catch(error => console.error('Recovery failed:', error));
+  });
+  player.on('introSkipped', () => refreshNowPlaying());
+
+  setInterval(countViewers, VIEWER_TICK_MS).unref();
+  setInterval(() => {
+    if (player.active) saveNowPlaying().catch(error => console.warn('Could not save now playing:', error.message));
+  }, NOW_PLAYING_SAVE_MS).unref();
 
   // Keep the resume position fresh in case the MiniPC or bot dies mid-film.
   let lastSaved = null;
@@ -903,26 +1173,47 @@ export function startBot(player) {
     }
   }
 
+  /** A JSON file younger than AUTOPLAY_MAX_AGE_MS, read once and deleted; null otherwise. */
+  async function takeFile(path) {
+    try {
+      const { mtimeMs } = await stat(path);
+      const data = Date.now() - mtimeMs < AUTOPLAY_MAX_AGE_MS ? JSON.parse(await readFile(path, 'utf8')) : null;
+      await rm(path, { force: true });
+      return data;
+    } catch (error) {
+      if (error.code !== 'ENOENT') console.error(`${path} unreadable:`, error.message);
+      return null;
+    }
+  }
+
   /**
-   * For deploys during a film: data/autoplay.json ({ "itemId": "...", "by": "name" }),
-   * written just before a restart, starts that item again where it left off. One-shot,
-   * and ignored when older than AUTOPLAY_MAX_AGE_MS.
+   * After a crash or restart: the old now-playing message goes, and what played goes
+   * on where it was (data/nowplaying.json, saved every few seconds), as long as somebody
+   * is still in the voice room. data/autoplay.json ({ "itemId", "by" }, from the deploy
+   * script) is the fallback; it resumes from Jellyfin's saved position.
    */
   async function playAfterRestart() {
-    let request;
-    try {
-      const { mtimeMs } = await stat(AUTOPLAY_FILE);
-      request = Date.now() - mtimeMs < AUTOPLAY_MAX_AGE_MS ? JSON.parse(await readFile(AUTOPLAY_FILE, 'utf8')) : null;
-      await rm(AUTOPLAY_FILE, { force: true });
-    } catch (error) {
-      if (error.code !== 'ENOENT') console.error('Autoplay file unreadable:', error.message);
+    const state = await takeFile(NOW_PLAYING_FILE);
+    const request = await takeFile(AUTOPLAY_FILE);
+    await deleteDeadMessages();
+    const itemId = state?.itemId ?? request?.itemId;
+    if (!itemId) return;
+    if (!peopleInVoice()) {
+      console.log('Not resuming after restart: nobody in the voice room');
       return;
     }
-    if (!request?.itemId) return;
     try {
-      const item = await getItem(request.itemId);
+      const item = await getItem(itemId);
       console.log(`Playing ${itemLabel(item)} again after restart`);
-      await beginPlayback(item, {}, request.by ?? 'restart', payload => textChannel().send(payload));
+      const send = payload => textChannel().send(payload);
+      if (state) {
+        const startSeconds = Math.max(0, state.position - 5);
+        await beginPlayback(item, {
+          startSeconds, tracks: { audioIndex: state.audioIndex, subtitleIndex: state.subtitleIndex }, byId: state.byId,
+        }, state.by ?? 'FilmVault', send, `🔄 Kino se restartovalo, navázáno od ${formatTime(startSeconds)}.`);
+      } else {
+        await beginPlayback(item, {}, request.by ?? 'restart', send);
+      }
     } catch (error) {
       console.error('Autoplay after restart failed:', error);
     }
@@ -940,11 +1231,14 @@ export function startBot(player) {
       guildId = guild.id;
       player.guildId = guild.id;
       player.quality = await loadQuality();
+      player.sound = (await loadSettings()).sound;
       await guild.commands.set(commands);
       console.log(`Registered ${commands.length} slash commands in ${guild.name}; text #${text.name}, voice ${voice.name}`);
       const wishlistChannelId = await startWishlist(guild);
       await keepHelpLast(client, text, voice.id, wishlistChannelId).catch(error => console.error('Help message failed:', error.message));
       await playAfterRestart();
+      setInterval(() => postMonthlySummary().catch(error => console.error('Monthly summary failed:', error)), SUMMARY_CHECK_MS).unref();
+      postMonthlySummary().catch(error => console.error('Monthly summary failed:', error));
     } catch (error) {
       console.error('Startup failed:', error);
       process.exit(1);

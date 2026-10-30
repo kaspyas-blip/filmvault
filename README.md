@@ -9,7 +9,11 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 - **Vyhledávání a výběr** – `/pust` s našeptáváním, `/filmy` s filtrem žánru, roku a českého dabingu, `/serialy` s výběrem série a dílu
 - **Ovládání** – pauza, posun (`1:20:00`, `+5`, `-30s`), tlačítka pod zprávou, změna zvukové stopy a titulků za běhu
 - **Navazování** – pokračuje tam, kde jste skončili, pozice se ukládá do Jellyfinu
-- **Další díl** – posledních 30 s dílu ukazuje v rohu obrazu odpočet a pak hned naváže další díl se stejným jazykem, vysílání se mezi díly nepřeruší
+- **Další díl** – 25 s před závěrečnými titulky ukáže v rohu obrazu odpočet a po 5 s titulků hned naváže další díl se stejným jazykem, vysílání se mezi díly nepřeruší. Díly s potitulkovou scénou dohrají celé
+- **Úvodní znělka a titulky** se poznají samy: bot porovná zvuk sousedních dílů (jako plugin Intro Skipper, ale bez něj), u titulků s jinou písničkou v každém dílu podle černého obrazu. Tlačítko *Přeskočit úvod* si seriál zapamatuje
+- **Vyrovnaný zvuk** – `/hlasitost` zesílí dialogy a ztlumí výbuchy, na noc
+- **Statistiky** – `/statistiky`: žebříčky (kdo kouká, kdo pouští, kdo přidává přání a komu se plní), rekordy, odznaky a osobní statistiky; prvního v měsíci souhrn
+- **Samooprava** – když spadne vysílání, naváže samo (až 3× za 10 minut); když spadne nebo se restartuje bot, smaže mrtvou zprávu a pokračuje, kde to bylo. `/stav` ukáže, jak se kinu daří
 - **Čeština napřed** – bez výběru vezme český dabing (a české vynucené titulky), jinak české titulky
 - **Přehled** – `/filmy` a seznam dílů označí, co jste viděli (✅) a co máte rozkoukané (⏸)
 - **Historie** – `/videli` ukáže, co běželo, kdo to pustil a kde jste skončili; přes `/zapsat` jde přidat ručně a z nabídky odebrat
@@ -123,7 +127,7 @@ ID kanálu, serveru nebo role zkopíruješ, když v Discordu zapneš **Nastaven�
 npm start
 ```
 
-Když v konzoli uvidíš `Registered 14 slash commands`, je hotovo. Bot do textového kanálu sám pošle nápovědu a drží ji jako poslední zprávu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
+Když v konzoli uvidíš `Registered 17 slash commands`, je hotovo. Bot do textového kanálu sám pošle nápovědu a drží ji jako poslední zprávu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
 
 ### 8. Automatické spouštění (Windows)
 
@@ -144,6 +148,9 @@ Na Linuxu použij třeba službu systemd nebo `pm2`.
 | `/posun cas` | `1:20:00` = na čas, `+5` / `-2` = o minuty, `+30s` = o sekundy |
 | `/zvuk stopa`, `/titulky stopa` | změní zvukovou stopu nebo titulky za běhu |
 | `/kvalita [uroven]` | kvalita vysílání pro všechny: vysoká (nastavení z `.env`), střední (60 % datového toku), nízká (480p, třetina toku); volba se pamatuje |
+| `/hlasitost [rezim]` | normální, nebo vyrovnaný zvuk (dialogy hlasitěji, výbuchy tišeji); volba se pamatuje |
+| `/statistiky [kdo] [obdobi]` | statistiky kina, s `kdo` osobní; období tento měsíc, minulý měsíc, letos, celkově |
+| `/stav` | stav kina: vysílání, Jellyfin, Discord, zatížení MiniPC |
 | `/filmy [zanr] [rok] [cesky] [razeni] [strana]` | seznam filmů s filtry, film jde pustit z nabídky |
 | `/serialy [strana]` | seriál → série → díl |
 | `/videli [strana]` | historie kina, nedokoukané jde pustit dál, záznamy jde odebrat z nabídky 🗑 |
@@ -151,7 +158,7 @@ Na Linuxu použij třeba službu systemd nebo `pm2`.
 | `/hraje` | co hraje a v jakém čase |
 | `/stop`, `/odejdi` | zastaví / zastaví a odejde z hovoru |
 
-Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +10 min · stop**. Když všichni odejdou z hovoru, kino po 2 minutách přestane vysílat, bez přehrávání se po 5 minutách odpojí.
+Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +10 min · stop**, u seriálů navíc *Přeskočit úvod* a *Nepouštět další díl*. Když všichni odejdou z hovoru, kino po 2 minutách přestane vysílat, bez přehrávání se po 5 minutách odpojí.
 
 ## Roomka „Chceme vidět“
 

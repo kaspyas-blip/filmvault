@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { Client } from '@lng2004/discord.js-selfbot-v13';
 import { BaseMediaConnection, Streamer, playStream } from '@dank074/discord-video-stream';
@@ -13,12 +13,25 @@ import {
 } from './jellyfin.js';
 
 const SUBTITLE_FILE = 'tmp/subtitles.ass';
-const COUNTDOWN_FILE = 'tmp/countdown.txt';
+// Text drawn in the corner of the video. ffmpeg reads it again twice a second, so the
+// countdown appears and goes without restarting the stream (an empty file draws nothing).
+const OVERLAY_FILE = 'tmp/overlay.txt';
 const COUNTDOWN_SECONDS = 30;
+// With known end credits an episode is cut this long after they start; the countdown
+// then shows for the 25 s before them and these 5 s.
+const CREDITS_SHOWN_SECONDS = 5;
+const CREDITS_TO_END_SECONDS = 20;
+// Auto skip only when the intro has at least this much left.
+const INTRO_SKIP_MIN_LEFT = 5;
+const TICK_MS = 250;
+// No frame from ffmpeg for this long while playing: the stream is restarted where it was.
+const STALL_MS = 15_000;
 const JOIN_TIMEOUT_MS = 20_000;
 const HARDWARE_RETRY_WINDOW_MS = 15_000;
 // ffmpeg forces a keyframe every second; sending starts at the second one after a restart.
 const RESTART_SKIP_KEYFRAMES = 2;
+// Sound waits for the picture after a restart, but not longer than this.
+const AUDIO_HOLD_MAX_MS = 3000;
 // Receivers may buffer up to this much (10 ms units) so resent packets arrive in time.
 // Viewers' stats show Discord does not pass a minimum on (Minimum Playout Delay 0 ms).
 const PLAYOUT_DELAY_MAX = 600;
@@ -98,9 +111,13 @@ function patchConnection(conn, isRestarting, videoBitrate) {
     { send: 'sendAudioFrame', packetizer: '_audioPacketizer', lastSent: null, restarted: false, residual: 0 },
   ];
   let keyframesToSkip = 0;
+  let restartedAt = 0;
   conn.setPacketizer = videoCodec => {
     for (const track of tracks) track.restarted = true;
-    if (tracks[0].lastSent !== null) keyframesToSkip = RESTART_SKIP_KEYFRAMES;
+    if (tracks[0].lastSent !== null) {
+      keyframesToSkip = RESTART_SKIP_KEYFRAMES;
+      restartedAt = performance.now();
+    }
     if (codec === videoCodec) return;
     codec = videoCodec;
     setPacketizer(videoCodec);
@@ -155,6 +172,8 @@ function patchConnection(conn, isRestarting, videoBitrate) {
     const line = `Video pace: ${pace.frames} frames, ${pace.gaps} gaps over ${PACE_GAP_MS} ms, longest ${Math.round(pace.maxGap)} ms, behind by up to ${Math.round(pace.maxBehind)} ms; `
       + `${feedback.packets} RTCP packets in: Discord asked to resend ${feedback.nacked} packets, for ${feedback.keyframes} keyframes`
       + (feedback.remb ? `, estimates ${Math.round(feedback.remb / 1000)} kbit/s` : '');
+    // For /stav.
+    conn.lastReport = { frames: pace.frames, gaps: pace.gaps, nacked: feedback.nacked, remb: feedback.remb, at: Date.now() };
     Object.assign(feedback, { packets: 0, nacked: 0, keyframes: 0, remb: null });
     (pace.gaps ? console.warn : console.log)(line);
     Object.assign(pace, { frames: 0, gaps: 0, maxGap: 0, maxBehind: 0, reported: now });
@@ -166,6 +185,10 @@ function patchConnection(conn, isRestarting, videoBitrate) {
         if (isH264Keyframe(frame)) keyframesToSkip--;
         if (keyframesToSkip > 0) return undefined;
       }
+      // While the picture waits for its keyframe, viewers still see the last frame from
+      // before. With the next episode's sound under it, that looked like a stuck episode,
+      // so the sound waits too (it loses about a second, usually a logo or silence).
+      if (!track.video && keyframesToSkip > 0 && performance.now() - restartedAt < AUDIO_HOLD_MAX_MS) return undefined;
       const now = performance.now();
       if (track.restarted && track.lastSent !== null) {
         const gapMs = now - track.lastSent - frametime;
@@ -199,11 +222,15 @@ function patchConnection(conn, isRestarting, videoBitrate) {
  * abort the old pipeline still flushes seconds of buffered frames; mixed with
  * the new session's frames they corrupted the picture, so they are dropped.
  */
-function sessionView(conn, signal) {
+function sessionView(conn, session) {
   const view = Object.create(conn);
-  for (const name of ['sendVideoFrame', 'sendAudioFrame']) {
-    view[name] = (frame, frametime) => (signal.aborted ? undefined : conn[name](frame, frametime));
-  }
+  const { signal } = session.ac;
+  view.sendAudioFrame = (frame, frametime) => (signal.aborted ? undefined : conn.sendAudioFrame(frame, frametime));
+  view.sendVideoFrame = (frame, frametime) => {
+    if (signal.aborted) return undefined;
+    session.lastFrameAt = Date.now();
+    return conn.sendVideoFrame(frame, frametime);
+  };
   return view;
 }
 
@@ -218,7 +245,7 @@ function withTimeout(promise, ms, message) {
  * process feeding it. All state changes go through run() so button spam
  * cannot interleave two restarts.
  *
- * Events: 'ended' (item), 'failed' (item, message, positionSeconds),
+ * Events: 'ended' (item), 'failed' (item, message, positionSeconds), 'introSkipped' (item),
  * 'stopped' ({ item, position, finished, startedAt, audio, subtitle }) whenever an item stops
  * playing for any reason, emitted before 'ended'/'failed'.
  */
@@ -235,9 +262,17 @@ export class Player extends EventEmitter {
     this.subtitleIndex = null;
     this.subtitle = null;
     this.quality = DEFAULT_QUALITY;
+    // 'normal', or 'night': quieter explosions, louder dialogue (see ffmpeg.js).
+    this.sound = 'normal';
     // Label of the episode that follows, or null. Shown as a countdown at the end,
     // and keeps the Go Live stream open after the end so the next one follows on.
     this.countdown = null;
+    // Detected intro and end credits of the item: { intro: [start, end] | null, credits: [start, end] | null }.
+    this.segments = null;
+    // Skip the intro by itself (the viewers chose so for this series).
+    this.autoSkipIntro = false;
+    this.introSkipped = false;
+    this.overlayText = null;
     this.session = null;
     this.paused = false;
     this.pausedPosition = 0;
@@ -246,6 +281,7 @@ export class Player extends EventEmitter {
     this.idleTimer = null;
     this.queue = Promise.resolve();
     this.patchStreamer();
+    setInterval(() => this.tick(), TICK_MS).unref();
   }
 
   // Seeking restarts ffmpeg; keeping the Go Live session open means viewers
@@ -254,13 +290,13 @@ export class Player extends EventEmitter {
     const create = this.streamer.createStream.bind(this.streamer);
     const stop = this.streamer.stopStream.bind(this.streamer);
     this.streamer.createStream = async () => {
-      const signal = this.session?.ac.signal ?? AbortSignal.abort();
+      const session = this.session ?? { ac: { signal: AbortSignal.abort() } };
       this.liveConn ??= patchConnection(
         await create(),
         () => this.holdingLive,
         () => (QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY]).bitrate,
       );
-      return sessionView(this.liveConn, signal);
+      return sessionView(this.liveConn, session);
     };
     this.streamer.stopStream = () => {
       if (this.holdingLive) return;
@@ -294,6 +330,20 @@ export class Player extends EventEmitter {
     return this.item ? durationSeconds(this.item) : null;
   }
 
+  /**
+   * Where the item stops: with a next episode and known end credits, shortly after
+   * they start, so the next one follows sooner. Credits that end well before the
+   * end have a scene after them (Marvel), so those episodes play to the end.
+   */
+  get endAt() {
+    const { duration } = this;
+    const credits = this.segments?.credits;
+    if (!duration || !this.countdown || !credits) return duration;
+    const [start, end] = credits;
+    if (start > duration - CREDITS_SHOWN_SECONDS || end < duration - CREDITS_TO_END_SECONDS) return duration;
+    return start + CREDITS_SHOWN_SECONDS;
+  }
+
   position() {
     if (!this.item) return 0;
     if (this.paused || !this.session) return this.pausedPosition;
@@ -321,7 +371,9 @@ export class Player extends EventEmitter {
       this.endSession({ keepLive: true });
       await this.ensureVoice(channelId);
       clearTimeout(this.idleTimer);
-      Object.assign(this, { item, source, audioIndex, subtitleIndex, subtitle, countdown, itemStartedAt: Date.now() });
+      Object.assign(this, {
+        item, source, audioIndex, subtitleIndex, subtitle, countdown, itemStartedAt: Date.now(), segments: null, introSkipped: false,
+      });
       this.startSession(this.clamp(startSeconds));
     });
   }
@@ -381,15 +433,30 @@ export class Player extends EventEmitter {
     });
   }
 
-  /** Drops (null) or sets the next episode; the countdown is in the video, so it restarts. */
-  setCountdown(countdown) {
+  /** sound: 'normal' or 'night'. Restarts the stream where it is. */
+  setSound(sound) {
     return this.run(async () => {
-      this.countdown = countdown;
+      this.sound = sound;
       if (!this.item || this.paused) return;
       const position = this.position();
       this.endSession({ keepLive: true });
       this.startSession(position);
     });
+  }
+
+  /** Drops (null) or sets the next episode's label; the overlay follows within a tick. */
+  setCountdown(countdown) {
+    return this.run(async () => {
+      this.countdown = countdown;
+      this.tick();
+    });
+  }
+
+  /** Intro and credits found for this item (see segments.js), possibly after it started. */
+  setSegments(item, segments) {
+    if (this.item?.Id !== item.Id) return;
+    this.segments = segments;
+    this.tick();
   }
 
   /** Ends the Go Live stream kept open after an episode when no next one follows. */
@@ -447,21 +514,81 @@ export class Player extends EventEmitter {
   }
 
   /**
-   * The "next episode in N s" text for ffmpeg's drawtext, for the last
-   * COUNTDOWN_SECONDS of the item. ffmpeg's clock starts at 0 at startSeconds.
-   * Returns { file, from } or null.
+   * The corner text: "next episode in N s" for the last COUNTDOWN_SECONDS before
+   * endAt, else nothing. ffmpeg counts down by itself; its clock starts at 0 at the
+   * whole second the session started from.
    */
-  prepareCountdown(startSeconds) {
-    if (!this.countdown || !this.duration) return null;
-    const left = this.duration - startSeconds;
+  overlayFor(session, position) {
+    const { endAt } = this;
+    if (!this.countdown || !endAt || position < endAt - COUNTDOWN_SECONDS) return '';
+    const left = endAt - Math.floor(session.startSeconds);
     const label = this.countdown.replace(/[%\\]/g, '');
-    mkdirSync('tmp', { recursive: true });
-    writeFileSync(COUNTDOWN_FILE, `Další díl za %{eif:max(1,ceil(${left.toFixed(2)}-t)):d} s\n${label}`);
-    return { file: COUNTDOWN_FILE, from: Math.max(0, left - COUNTDOWN_SECONDS) };
+    return `Další díl za %{eif:max(1,ceil(${left.toFixed(2)}-t)):d} s\n${label}`;
+  }
+
+  /** Replaces the overlay file in one step, so ffmpeg never reads half of it. */
+  writeOverlay(text) {
+    if (text === this.overlayText) return;
+    try {
+      mkdirSync('tmp', { recursive: true });
+      writeFileSync(`${OVERLAY_FILE}.new`, text);
+      renameSync(`${OVERLAY_FILE}.new`, OVERLAY_FILE);
+      this.overlayText = text;
+    } catch (error) {
+      // ffmpeg may have the file open this instant on Windows; the next tick retries.
+      if (error.code !== 'EPERM' && error.code !== 'EBUSY') console.warn('Overlay write failed:', error.message);
+    }
+  }
+
+  /**
+   * Runs four times a second: draws or clears the countdown, ends an episode at its
+   * credits, skips the intro when the viewers chose so, and restarts a stalled stream.
+   */
+  tick() {
+    const { session } = this;
+    if (!this.item || !session || this.paused) return;
+    const position = this.position();
+    this.writeOverlay(this.overlayFor(session, position));
+    if (!session.startedAt || session.ending) return;
+    const { endAt, duration } = this;
+    if (endAt && duration && endAt < duration && position >= endAt) {
+      session.ending = true;
+      const item = this.item;
+      this.run(async () => {
+        if (this.session !== session) return;
+        console.log(`Finished ${itemLabel(item)} at the credits`);
+        this.reset({ finished: true });
+        this.emit('ended', item);
+      });
+      return;
+    }
+    const intro = this.segments?.intro;
+    if (intro && this.autoSkipIntro && !this.introSkipped && position >= intro[0] && position < intro[1] - INTRO_SKIP_MIN_LEFT) {
+      this.introSkipped = true;
+      const item = this.item;
+      console.log(`Skipping the intro of ${itemLabel(item)} to ${Math.round(intro[1])}s`);
+      this.seek(intro[1]).then(() => this.emit('introSkipped', item)).catch(error => console.error('Intro skip failed:', error));
+      return;
+    }
+    const lastFrame = session.lastFrameAt ?? session.startedAt;
+    if (Date.now() - lastFrame > STALL_MS) {
+      session.ending = true;
+      const at = Math.max(0, position - (Date.now() - lastFrame) / 1000);
+      console.warn(`No video from ffmpeg for ${Math.round((Date.now() - lastFrame) / 1000)} s, restarting at ${Math.round(at)}s`);
+      this.run(async () => {
+        if (this.session !== session) return;
+        this.endSession({ keepLive: true });
+        this.startSession(at);
+      });
+    }
   }
 
   startSession(startSeconds, { softwareFallback = false } = {}) {
     const video = this.source.MediaStreams.find(s => s.Type === 'Video');
+    // ffmpeg needs the file to exist; nobody reads it before the spawn below.
+    this.overlayText = this.overlayFor({ startSeconds }, startSeconds);
+    mkdirSync('tmp', { recursive: true });
+    writeFileSync(OVERLAY_FILE, this.overlayText);
     const args = buildFfmpegArgs({
       url: streamUrl(this.item, this.source),
       videoCodec: video?.Codec ?? null,
@@ -472,7 +599,8 @@ export class Player extends EventEmitter {
       softwareFallback,
       sourceFps: video?.RealFrameRate ?? video?.AverageFrameRate ?? null,
       quality: QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY],
-      countdown: this.prepareCountdown(startSeconds),
+      overlayFile: OVERLAY_FILE,
+      sound: this.sound,
     });
     const ac = new AbortController();
     const ff = spawn(config.ffmpegPath, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -564,7 +692,7 @@ export class Player extends EventEmitter {
     this.endSession({ keepLive: false });
     this.streamer.stopStream();
     Object.assign(this, {
-      item: null, source: null, audioIndex: null, subtitleIndex: null, subtitle: null, paused: false, pausedPosition: 0,
+      item: null, source: null, audioIndex: null, subtitleIndex: null, subtitle: null, paused: false, pausedPosition: 0, segments: null,
     });
     this.scheduleIdleLeave();
   }

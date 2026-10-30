@@ -159,6 +159,16 @@ export async function getItem(id) {
   return item;
 }
 
+/** Type, genres and series of many items at once; IDs Jellyfin does not know are left out. */
+export async function itemsMeta(ids) {
+  const items = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const data = await request('/Items', { userId: await getUserId(), ids: ids.slice(i, i + 100).join(','), fields: 'Genres' });
+    items.push(...(data.Items ?? []));
+  }
+  return items;
+}
+
 export function itemLabel(item) {
   if (item.Type === 'Episode') {
     const season = String(item.ParentIndexNumber ?? 0).padStart(2, '0');

@@ -4,7 +4,7 @@ import {
   TextInputBuilder, TextInputStyle,
 } from 'discord.js';
 import { addWatch, history } from './history.js';
-import { durationSeconds, getItem, listLibrary } from './jellyfin.js';
+import { durationSeconds, getItem, listLibrary, saveProgress } from './jellyfin.js';
 import { findMovie, imdbUrl, movieDetails, normalizeTitle, titleSimilarity, tmdbUrl } from './movieinfo.js';
 import { formatTime } from './time.js';
 
@@ -177,7 +177,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       const id = historyId(film, item);
       const finishedAt = watch.finished.get(id);
       if (finishedAt && finishedAt > film.addedAt) {
-        done.push(film);
+        done.push({ ...film, seenAt: finishedAt });
         continue;
       }
       const latest = item && watch.latest.get(id);
@@ -191,7 +191,10 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
       });
     }
     if (done.length) {
-      list.films = list.films.filter(f => !done.includes(f));
+      // Kept for the statistics (whose wishes came true).
+      list.done = [...(list.done ?? []), ...done];
+      const doneIds = new Set(done.map(f => f.tmdbId));
+      list.films = list.films.filter(f => !doneIds.has(f.tmdbId));
       await save();
       console.log(`Wishlist: removed watched ${done.map(f => f.title).join(', ')}`);
     }
@@ -491,11 +494,12 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
   }
 
   /** Records a film as watched now (also when it was not in Jellyfin) so it drops off the list. */
-  async function markSeen(film, by) {
+  async function markSeen(film, by, byId) {
     const item = await jellyfinItem(film);
     const full = item ? await getItem(item.Id).catch(() => null) : null;
     const duration = full ? durationSeconds(full) : null;
-    await addWatch({ id: historyId(film, item), label: filmLabel(film), by, endedAt: Date.now(), position: duration ?? 0, duration, finished: true });
+    await addWatch({ id: historyId(film, item), label: filmLabel(film), by, byId, endedAt: Date.now(), position: duration ?? 0, duration, finished: true });
+    if (item) await saveProgress(item.Id, { played: true }).catch(error => console.error('Marking played in Jellyfin failed:', error.message));
   }
 
   async function handleInteraction(interaction) {
@@ -562,7 +566,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     }
 
     if (action === 'seen') {
-      await markSeen(film, userName(interaction));
+      await markSeen(film, userName(interaction), interaction.user.id);
       refresh();
       if (!fromPanel) await interaction.message.edit({ components: [] }).catch(() => {});
       return answer({ content: `✅ **${filmLabel(film)}** je zapsaný v /videli a ze seznamu zmizí.`, components: [] });
@@ -578,7 +582,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     if (action === 'play') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const item = await getItem(value);
-      await play(item, userName(interaction));
+      await play(item, userName(interaction), interaction.user.id);
       await interaction.message.edit({ components: [] }).catch(() => {});
       return interaction.editReply('🍿 Pouštím. Ovládání je v kanálu s příkazy.');
     }
@@ -595,5 +599,11 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     setInterval(refresh, PERIODIC_REFRESH_MS).unref();
   }
 
-  return { start, refresh, handleInteraction };
+  /** For the statistics: films still wished for, and those watched since ({ ...film, seenAt }). */
+  async function entries() {
+    const list = await load();
+    return { open: list.films, done: list.done ?? [] };
+  }
+
+  return { start, refresh, handleInteraction, entries };
 }

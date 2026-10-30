@@ -11,6 +11,13 @@ const ENCODER_OPTIONS = {
 const HW_DECODABLE = new Set(['h264', 'hevc', 'mpeg2video', 'vc1', 'vp9']);
 // Font for the next-episode countdown (colon escaped for the filter graph); elsewhere fontconfig picks one.
 const FONT = process.platform === 'win32' ? 'C\\:/Windows/Fonts/segoeuib.ttf' : null;
+// Night sound: the centre channel (dialogue in 5.1 films) goes into the stereo mix at
+// full level instead of -3 dB, and a compressor without look-ahead (no added delay)
+// tames loud scenes, with the quiet ones raised. The limiter keeps peaks from clipping.
+const NIGHT_SOUND = [
+  '-center_mix_level', '1',
+  '-af', 'acompressor=threshold=0.06:ratio=4:attack=15:release=400:makeup=2.5,alimiter=limit=0.9:level=false',
+];
 // NTSC rates as exact fractions, so frames are not dropped or repeated over time.
 const EXACT_RATES = [[24000 / 1001, '24000/1001'], [30000 / 1001, '30000/1001']];
 
@@ -49,11 +56,12 @@ export function hdrTransfer(video) {
  * hdr: input transfer ('smpte2084' / 'arib-std-b67') to tone map to SDR, or null
  * sourceFps: the film's frame rate (see outputRate)
  * quality: { height, bitrate } (see quality.js)
- * countdown: { file, from } – drawtext text file shown from `from` seconds on, or null
+ * overlayFile: text file drawn in the corner, read again twice a second (empty = nothing), or null
+ * sound: 'normal', or 'night' (dialogue louder, loud scenes compressed)
  */
 export function buildFfmpegArgs({
   url, videoCodec = null, startSeconds = 0, audioIndex = null, subtitle = null, softwareFallback = false, hdr = null,
-  sourceFps = null, quality = { height: config.height, bitrate: config.bitrate }, countdown = null,
+  sourceFps = null, quality = { height: config.height, bitrate: config.bitrate }, overlayFile = null, sound = 'normal',
 }) {
   const encoderName = softwareFallback ? 'libx264' : config.encoder;
   const encoder = ENCODER_OPTIONS[encoderName] ?? ENCODER_OPTIONS.libx264;
@@ -80,11 +88,12 @@ export function buildFfmpegArgs({
       + 'tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv';
   }
   let tail = `fps=${rate},format=${encoder.pixFmt}`;
-  if (countdown) {
-    // Bottom right, on top of everything, sized to the output height.
+  if (overlayFile) {
+    // Bottom right, on top of everything, sized to the output height. Re-read every
+    // half second; an empty file draws no box either.
     const size = Math.round(Math.min(quality.height, 720) / 26);
-    tail = `drawtext=${FONT ? `fontfile='${FONT}':` : ''}textfile=${countdown.file}:expansion=normal`
-      + `:enable='gte(t,${countdown.from.toFixed(2)})':fontsize=${size}:fontcolor=white:line_spacing=${Math.round(size / 4)}`
+    tail = `drawtext=${FONT ? `fontfile='${FONT}':` : ''}textfile=${overlayFile}:reload=${Math.max(1, Math.round(fps / 2))}:expansion=normal`
+      + `:fontsize=${size}:fontcolor=white:line_spacing=${Math.round(size / 4)}`
       + `:box=1:boxcolor=black@0.6:boxborderw=${Math.round(size / 2)}:x=w-tw-${size * 2}:y=h-th-${size * 2},${tail}`;
   }
   let graph;
@@ -108,6 +117,7 @@ export function buildFfmpegArgs({
     '-bf', '0',
     '-g', String(Math.round(fps * 2)),
     '-force_key_frames', 'expr:gte(t,n_forced*1)',
+    ...(sound === 'night' ? NIGHT_SOUND : []),
     '-ac', '2', '-lfe_mix_level', '1', '-ar', '48000',
     '-c:a', 'libopus', '-b:a', `${config.audioBitrate}k`,
     '-f', 'nut', 'pipe:1',
