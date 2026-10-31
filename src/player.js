@@ -238,6 +238,17 @@ function sessionView(conn, session) {
   return view;
 }
 
+/** Name of an incident Discord reports right now, or null (also when the page cannot be reached). */
+async function discordIncident() {
+  try {
+    const res = await fetch('https://discordstatus.com/api/v2/incidents/unresolved.json', { signal: AbortSignal.timeout(5000) });
+    const { incidents } = await res.json();
+    return incidents?.[0]?.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function withTimeout(promise, ms, message) {
   let timer;
   const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
@@ -527,7 +538,10 @@ export class Player extends EventEmitter {
       } catch (retryError) {
         const s = retryError.status ?? {};
         console.error(`Joining the call failed again (session ${!!s.hasSession}, voice server ${!!s.hasToken}, connecting ${!!s.started})`);
-        throw new UserError('Nepodařilo se připojit do hovoru (vypršel čas). Zkus to za chvíli znovu, případně /odejdi.');
+        const incident = await discordIncident();
+        throw new UserError(incident
+          ? `Nepodařilo se připojit do hovoru. Discord teď hlásí problém: „${incident}“ (discordstatus.com). Zkus to, až ho vyřeší.`
+          : 'Nepodařilo se připojit do hovoru (vypršel čas). Zkus to za chvíli znovu, případně /odejdi.');
       }
     }
     this.channelId = channelId;
