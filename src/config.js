@@ -38,6 +38,8 @@ export const config = {
   wishlistChannel: process.env.WISHLIST_CHANNEL?.trim() || 'filmy',
   tmdbApiKey: process.env.TMDB_API_KEY?.trim() || null,
   omdbApiKey: process.env.OMDB_API_KEY?.trim() || null,
+  // Role pinged when new films appear in Jellyfin (ID or name; empty = announce without a ping)
+  announceRole: process.env.ANNOUNCE_ROLE?.trim() ?? 'test',
   // Role ID or exact role name (case-insensitive)
   allowedRole: process.env.ALLOWED_ROLE_ID?.trim() || null,
 };

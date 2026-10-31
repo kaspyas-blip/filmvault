@@ -1,8 +1,9 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, ModalBuilder, StringSelectMenuBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, StringSelectMenuBuilder,
   TextInputBuilder, TextInputStyle,
 } from 'discord.js';
+import { config } from './config.js';
 import { addWatch, history } from './history.js';
 import { durationSeconds, getItem, listLibrary, saveProgress } from './jellyfin.js';
 import { findMovie, imdbUrl, movieDetails, normalizeTitle, titleSimilarity, tmdbUrl } from './movieinfo.js';
@@ -12,7 +13,8 @@ import { formatTime } from './time.js';
  * The wishlist room: people write movie titles, the bot looks them up and keeps one
  * list message at the bottom of the room. Each film shows whether it is in Jellyfin;
  * once the cinema finishes it, it drops off (it is in /videli by then). The dice
- * picks a random film that can be played right away.
+ * picks a random film that can be played right away. Films newly added to Jellyfin
+ * are announced here, one message per batch.
  */
 
 const FILE = 'data/wishlist.json';
@@ -28,6 +30,11 @@ const IMPORT_MESSAGES = 200;
 const DESCRIPTION_LIMIT = 4000;
 const DICE_MEMORY = 20;
 const NICKNAME_CACHE_MS = 10 * 60_000;
+// New films are announced once Jellyfin has added nothing for this long, so a batch
+// copied in over several minutes ends up in one message (with metadata filled in).
+const ARRIVALS_QUIET_MS = 10 * 60_000;
+const ARRIVALS_PLAY_OPTIONS = 25;
+const MAX_EMBEDS = 10;
 
 function formatDate(ms) {
   return new Date(ms).toLocaleDateString('cs-CZ', { timeZone: 'Europe/Prague', day: 'numeric', month: 'numeric', year: 'numeric' });
@@ -49,7 +56,7 @@ export function titlesIn(text) {
 }
 
 export function createWishlist({ client, channelId, allowed, userName, play }) {
-  let state = null; // { listMessageId, imported, films: [...] }
+  let state = null; // { listMessageId, imported, films, done, knownMovies, arrivals }
   let writing = Promise.resolve();
   let library = null; // { expires, byImdb, byTmdb, byTitle }
   let refreshTimer = null;
@@ -84,7 +91,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
 
   async function libraryIndex() {
     if (library && library.expires > Date.now()) return library;
-    const { items } = await listLibrary('Movie', undefined, undefined, { fields: 'ProductionYear,ProviderIds,OriginalTitle' });
+    const { items } = await listLibrary('Movie', undefined, undefined, { fields: 'ProductionYear,ProviderIds,OriginalTitle,Genres' });
     const index = { expires: Date.now() + LIBRARY_CACHE_MS, byImdb: new Map(), byTmdb: new Map(), byTitle: new Map(), items };
     for (const item of items) {
       const ids = item.ProviderIds ?? {};
@@ -201,6 +208,112 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     return rows;
   }
 
+  // ---- New in Jellyfin -----------------------------------------------------
+
+  /** Item ID plus TMDB/IMDb IDs, so a film Jellyfin re-adds under a new ID is not news. */
+  function movieKeys(item) {
+    const ids = item.ProviderIds ?? {};
+    return [item.Id, ids.Tmdb && `tmdb:${ids.Tmdb}`, ids.Imdb && `imdb:${ids.Imdb}`].filter(Boolean);
+  }
+
+  /** The role to ping: ID or name from the config, or null. */
+  function announceRole() {
+    const wanted = config.announceRole;
+    if (!wanted) return null;
+    const role = channel().guild.roles.cache.find(r => r.id === wanted || r.name.toLowerCase() === wanted.toLowerCase());
+    if (!role) console.warn(`Announce role "${wanted}" not found, announcing without a ping`);
+    else if (!role.mentionable && !channel().permissionsFor(client.user)?.has(PermissionFlagsBits.MentionEveryone)) {
+      console.warn(`Announce role "${role.name}" is not mentionable and the bot may not mention roles: nobody gets notified`);
+    }
+    return role ?? null;
+  }
+
+  const itemTitle = item => (item.ProductionYear ? `${item.Name} (${item.ProductionYear})` : item.Name);
+
+  function arrivalLine(item, wishers) {
+    const ids = item.ProviderIds ?? {};
+    const url = ids.Imdb ? imdbUrl(ids.Imdb) : ids.Tmdb ? tmdbUrl(ids.Tmdb) : null;
+    const parts = [url ? `[${itemTitle(item)}](${url})` : itemTitle(item)];
+    const runtime = formatRuntime(Math.round((durationSeconds(item) ?? 0) / 60));
+    if (runtime) parts.push(runtime);
+    if (item.CommunityRating) parts.push(`⭐ ${item.CommunityRating.toFixed(1)}`);
+    if (item.Genres?.length) parts.push(item.Genres.slice(0, 2).join(', '));
+    if (wishers.length) parts.push(`🙌 přání: ${wishers.map(w => w.name).join(', ')}`);
+    return `🎬 ${parts.join(' · ')}`;
+  }
+
+  async function announceArrivals(items) {
+    const list = await load();
+    // Whose wish came true: wishlist entries that now match one of the new films.
+    const wishers = new Map(items.map(item => [item.Id, []]));
+    for (const film of list.films) {
+      const item = await jellyfinItem(film);
+      if (item && wishers.has(item.Id)) wishers.get(item.Id).push({ name: await adderName(film) ?? film.addedBy, id: film.addedById });
+    }
+    const sorted = [...items].sort((a, b) => a.Name.localeCompare(b.Name, 'cs'));
+    const chunks = [[]];
+    let length = 0;
+    for (const item of sorted) {
+      const line = arrivalLine(item, wishers.get(item.Id));
+      if (length + line.length + 1 > DESCRIPTION_LIMIT) {
+        chunks.push([]);
+        length = 0;
+      }
+      chunks.at(-1).push(line);
+      length += line.length + 1;
+    }
+    const n = items.length;
+    const count = `${n} ${n === 1 ? 'nový film' : n < 5 ? 'nové filmy' : 'nových filmů'}`;
+    const role = announceRole();
+    const wishedIds = [...new Set([...wishers.values()].flat().map(w => w.id).filter(Boolean))];
+    const content = [
+      `${role ? `${role} ` : ''}🍿 V kině ${n === 1 ? 'přibyl' : 'přibyly'} **${count}**!`,
+      wishedIds.length ? `🙌 Splněná přání: ${wishedIds.map(id => `<@${id}>`).join(' ')}` : null,
+    ].filter(Boolean).join('\n');
+    const menu = new StringSelectMenuBuilder().setCustomId('fw:playnew').setPlaceholder('▶ Pustit některý z nich…')
+      .addOptions(sorted.slice(0, ARRIVALS_PLAY_OPTIONS).map(item => ({ label: itemTitle(item).slice(0, 100), value: item.Id })));
+    // A message holds at most 10 embeds; only a huge first import would be cut short.
+    await channel().send({
+      content,
+      embeds: chunks.slice(0, MAX_EMBEDS).map((lines, i) => new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle(i ? null : `🆕 Nově v Jellyfinu (${n})`)
+        .setDescription(lines.join('\n'))),
+      components: [new ActionRowBuilder().addComponents(menu)],
+      allowedMentions: { roles: role ? [role.id] : [], users: wishedIds },
+    });
+    console.log(`Announced ${n} new film(s): ${sorted.map(i => i.Name).join(', ')}`);
+  }
+
+  /**
+   * Notes which films Jellyfin has; new ones wait until a quiet period ends the batch,
+   * then go out in one message. The very first run only takes note of the library.
+   */
+  async function checkArrivals() {
+    const list = await load();
+    const index = await libraryIndex();
+    if (!list.knownMovies) {
+      list.knownMovies = index.items.flatMap(movieKeys);
+      await save();
+      return;
+    }
+    const known = new Set(list.knownMovies);
+    const fresh = index.items.filter(item => !movieKeys(item).some(key => known.has(key)));
+    list.arrivals ??= { ids: [], lastAt: 0 };
+    const added = fresh.filter(item => !list.arrivals.ids.includes(item.Id));
+    if (added.length) {
+      list.arrivals.ids.push(...added.map(item => item.Id));
+      list.arrivals.lastAt = Date.now();
+      await save();
+    }
+    if (!list.arrivals.ids.length || Date.now() - list.arrivals.lastAt < ARRIVALS_QUIET_MS) return;
+    // Films removed again meanwhile are no longer in `fresh`; a failed send is retried next time.
+    if (fresh.length) await announceArrivals(fresh);
+    list.knownMovies = [...known, ...fresh.flatMap(movieKeys)];
+    list.arrivals = { ids: [], lastAt: 0 };
+    await save();
+  }
+
   // ---- Messages -----------------------------------------------------------
 
   function filmLabel(film) {
@@ -284,6 +397,8 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
   async function renderList() {
     const room = channel();
     if (!room) return;
+    // Before the list, so the list is posted again below an announcement.
+    await checkArrivals().catch(error => console.error('New film check failed:', error));
     const list = await load();
     const payload = listPayload(await currentFilms());
     const rendered = JSON.stringify(payload);
@@ -532,6 +647,13 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
     }
 
     if (!allowed(interaction)) return interaction.reply(ephemeral('Na tohle nemáš oprávnění.'));
+
+    if (action === 'playnew') {
+      // From the announcement of new films; the menu stays for the others.
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await play(await getItem(interaction.values[0]), userName(interaction), interaction.user.id);
+      return interaction.editReply('🍿 Pouštím. Ovládání je v kanálu s příkazy.');
+    }
 
     const list = await load();
     // Select menus carry the film in their value, panel buttons and the modal in the ID.
