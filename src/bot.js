@@ -1290,6 +1290,8 @@ export function startBot(player) {
       voiceChannelId = voice.id;
       guildId = guild.id;
       player.guildId = guild.id;
+      // A call the account was left in before the restart (or a Discord outage) blocks the next join.
+      player.leaveVoice();
       player.quality = await loadQuality();
       player.sound = (await loadSettings()).sound;
       await guild.commands.set(commands);

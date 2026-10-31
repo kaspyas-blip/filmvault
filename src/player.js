@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { Client } from '@lng2004/discord.js-selfbot-v13';
-import { BaseMediaConnection, Streamer, playStream } from '@dank074/discord-video-stream';
+import { BaseMediaConnection, GatewayOpCodes, Streamer, playStream } from '@dank074/discord-video-stream';
 import { config } from './config.js';
 import { buildFfmpegArgs, hdrTransfer } from './ffmpeg.js';
 import { DEFAULT_QUALITY, QUALITIES } from './quality.js';
@@ -29,6 +29,7 @@ const STALL_MS = 15_000;
 // Restarts after a stall in a row before the stream counts as failed.
 const STALL_RESTARTS = 3;
 const JOIN_TIMEOUT_MS = 20_000;
+const JOIN_RETRY_DELAY_MS = 3000;
 const HARDWARE_RETRY_WINDOW_MS = 15_000;
 // ffmpeg forces a keyframe every second; sending starts at the second one after a restart.
 const RESTART_SKIP_KEYFRAMES = 2;
@@ -482,9 +483,54 @@ export class Player extends EventEmitter {
     return this.run(async () => {
       this.reset();
       clearTimeout(this.idleTimer);
-      this.streamer.leaveVoice();
+      this.leaveVoice();
       this.channelId = null;
     });
+  }
+
+  /**
+   * The library's leave sends guild_id null, which does not take the account out of a
+   * server call it is left in from before (after a Discord outage it stayed there and
+   * every join timed out); this one names the server.
+   */
+  leaveVoice() {
+    this.streamer.stopStream();
+    this.streamer.leaveVoice();
+    this.streamer.sendOpcode(GatewayOpCodes.VOICE_STATE_UPDATE, {
+      guild_id: this.guildId, channel_id: null, self_mute: false, self_deaf: false, self_video: false,
+    });
+  }
+
+  async joinVoice(channelId) {
+    try {
+      await withTimeout(this.streamer.joinVoice(this.guildId, channelId), JOIN_TIMEOUT_MS, 'join timed out');
+    } catch (error) {
+      // The pending connection stays registered and keeps its listeners otherwise.
+      const status = this.streamer.voiceConnection?.status ?? {};
+      this.leaveVoice();
+      throw Object.assign(error, { status });
+    }
+  }
+
+  async ensureVoice(channelId) {
+    if (this.channelId === channelId && this.streamer.voiceConnection) return;
+    if (this.streamer.voiceConnection) this.leaveVoice();
+    this.channelId = null;
+    try {
+      await this.joinVoice(channelId);
+    } catch (error) {
+      const { hasSession, hasToken, started } = error.status ?? {};
+      console.warn(`Joining the call failed (session ${!!hasSession}, voice server ${!!hasToken}, connecting ${!!started}), leaving and trying again`);
+      await new Promise(resolve => setTimeout(resolve, JOIN_RETRY_DELAY_MS));
+      try {
+        await this.joinVoice(channelId);
+      } catch (retryError) {
+        const s = retryError.status ?? {};
+        console.error(`Joining the call failed again (session ${!!s.hasSession}, voice server ${!!s.hasToken}, connecting ${!!s.started})`);
+        throw new UserError('Nepodařilo se připojit do hovoru (vypršel čas). Zkus to za chvíli znovu, případně /odejdi.');
+      }
+    }
+    this.channelId = channelId;
   }
 
   clamp(seconds) {
@@ -503,21 +549,6 @@ export class Player extends EventEmitter {
     }
     if (stream.IsExternal) throw new UserError('Externí obrázkové titulky zatím neumím.');
     return { kind: 'image', index: stream.Index };
-  }
-
-  async ensureVoice(channelId) {
-    if (this.channelId === channelId && this.streamer.voiceConnection) return;
-    if (this.streamer.voiceConnection) {
-      this.streamer.stopStream();
-      this.streamer.leaveVoice();
-    }
-    this.channelId = null;
-    await withTimeout(
-      this.streamer.joinVoice(this.guildId, channelId),
-      JOIN_TIMEOUT_MS,
-      'Nepodařilo se připojit do hovoru (vypršel čas).',
-    );
-    this.channelId = channelId;
   }
 
   /**
