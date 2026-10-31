@@ -117,7 +117,7 @@ Zkopíruj `.env.example` jako `.env` a vyplň ho:
 | `WISHLIST_CHANNEL` | roomka se seznamem „Chceme vidět“ (výchozí `filmy`) |
 | `TMDB_API_KEY` | klíč z [TMDB](https://www.themoviedb.org/settings/api) – bez něj roomka se seznamem nefunguje |
 | `OMDB_API_KEY` | klíč z [OMDb](https://www.omdbapi.com/apikey.aspx) – hodnocení přímo z IMDb (nepovinné) |
-| `ANNOUNCE_ROLE` | ID nebo název role, kterou bot označí u nově přidaných filmů (výchozí `test`, prázdné = bez označení) |
+| `ANNOUNCE_ROLE` | ID nebo název role, kterou bot označí u nově přidaných filmů (prázdné = bez označení) |
 | `ALLOWED_ROLE_ID` | ID nebo název role, která smí ovládat kino (prázdné = všichni) |
 
 ID kanálu, serveru nebo role zkopíruješ, když v Discordu zapneš **Nastavení → Pokročilé → Režim vývojáře** a klikneš na kanál, server nebo roli pravým tlačítkem → **Kopírovat ID**.
@@ -173,7 +173,7 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
   - **🗑 Odebrat** – smaže film ze seznamu.
 - **🎲 Hodit kostkou** vybere náhodně film, který máte (✅ nebo 📺): z Jellyfinu ho nabídne rovnou pustit, u 📺 ukáže odkaz. **Hodit znovu** u téže kostky nenabídne nic, co už padlo, dokud neprojde celý seznam.
 - Při prvním spuštění bot projde starší zprávy v roomce a filmy z nich převezme.
-- **Nové filmy v Jellyfinu** bot ohlásí v roomce jednou zprávou za celou dávku: počká, až se 10 minut nic nepřidá, pak vypíše všechny nové filmy (délka, hodnocení, žánr), označí roli z `ANNOUNCE_ROLE` a lidi, kterým se tím splnilo přání, a nabídne je rovnou pustit. Aby označení role opravdu přišlo jako upozornění, musí mít role zapnuté *Povolit všem @zmínit tuto roli*, nebo bot oprávnění *Zmínit @everyone, @here a všechny role*.
+- **Nové filmy v Jellyfinu** bot ohlásí v roomce jednou zprávou za celou dávku: počká, až se 10 minut nic nepřidá, pak vypíše všechny nové filmy (délka, hodnocení, žánr), označí lidi, kterým se tím splnilo přání, a nabídne je rovnou pustit. Volitelně může označit i roli (`ANNOUNCE_ROLE`); aby to přišlo jako upozornění, musí mít role zapnuté *Povolit všem @zmínit tuto roli*, nebo bot oprávnění *Zmínit @everyone, @here a všechny role*.
 
 ## Když něco nejde
 
