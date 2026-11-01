@@ -103,6 +103,9 @@ export function startBot(player) {
   // Message content is for the wishlist room, where people just write movie titles.
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+    // Replies quote what people wrote ("@everyone" as a film title); only messages that
+    // name their mentions explicitly ping anyone.
+    allowedMentions: { parse: [], repliedUser: false },
   });
   let wishlist = null;
   const itemCache = new Map();
@@ -447,15 +450,21 @@ export function startBot(player) {
     const resumedFrom = startSeconds === null ? resumeSeconds(item) : null;
     const previous = player.item;
     const next = await findNextEpisode(item);
-    await player.play({
-      autoSkipIntro: !!item.SeriesId && (await loadSettings()).skipIntro.includes(item.SeriesId),
-      countdown: next ? itemLabel(next) : null,
-      item,
-      channelId: voiceChannelId,
-      startSeconds: resumedFrom ?? startSeconds ?? 0,
-      audioIndex: defaults.audioIndex,
-      subtitleIndex: titulky ? (titulky === SUBTITLES_OFF ? null : Number(titulky)) : defaults.subtitleIndex,
-    });
+    try {
+      await player.play({
+        autoSkipIntro: !!item.SeriesId && (await loadSettings()).skipIntro.includes(item.SeriesId),
+        countdown: next ? itemLabel(next) : null,
+        item,
+        channelId: voiceChannelId,
+        startSeconds: resumedFrom ?? startSeconds ?? 0,
+        audioIndex: defaults.audioIndex,
+        subtitleIndex: titulky ? (titulky === SUBTITLES_OFF ? null : Number(titulky)) : defaults.subtitleIndex,
+      });
+    } catch (error) {
+      // The previous film was stopped for this one (joining the call failed): its buttons go.
+      if (previous && !player.active) await retireNowPlaying(previous, '⏹ Zastaveno, nové přehrávání se nepodařilo spustit.');
+      throw error;
+    }
     if (previous) await retireNowPlaying(previous, 'Přepnuto na jiný film.');
 
     loadSegments(item, next);
@@ -993,16 +1002,20 @@ export function startBot(player) {
     switch (interaction.commandName) {
       case 'pust':
         return handlePlay(interaction);
+      // Deferred first everywhere the player is awaited: it may be busy (joining the call)
+      // for longer than the 3 s Discord gives for an answer.
       case 'pauza':
         requireActive();
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         await player.pause();
         await refreshNowPlaying();
-        return interaction.reply({ content: `⏸ Pozastaveno na ${formatTime(player.position())}.`, flags: MessageFlags.Ephemeral });
+        return interaction.editReply(`⏸ Pozastaveno na ${formatTime(player.position())}.`);
       case 'pokracuj':
         requireActive();
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         await player.resume();
         await refreshNowPlaying();
-        return interaction.reply({ content: '▶ Pokračuje se.', flags: MessageFlags.Ephemeral });
+        return interaction.editReply('▶ Pokračuje se.');
       case 'posun':
         return handleSeek(interaction);
       case 'kvalita':
@@ -1038,17 +1051,19 @@ export function startBot(player) {
           return interaction.reply({ content: '⏹ Zastaveno, kino už se znovu nepustí.', flags: MessageFlags.Ephemeral });
         }
         requireActive();
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const item = player.item;
         await player.stop();
-        await retireNowPlaying(item, `⏹ Zastaveno (${interaction.member?.displayName ?? interaction.user.username}).`);
-        return interaction.reply({ content: '⏹ Zastaveno.', flags: MessageFlags.Ephemeral });
+        await retireNowPlaying(item, `⏹ Zastaveno (${userName(interaction)}).`);
+        return interaction.editReply('⏹ Zastaveno.');
       }
       case 'odejdi': {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const item = player.item;
         cancelRecovery('⏹ Zastaveno, odpojeno z hovoru.');
         await player.leave();
         if (item) await retireNowPlaying(item, '⏹ Zastaveno, odpojeno z hovoru.');
-        return interaction.reply({ content: '👋 Odpojeno.', flags: MessageFlags.Ephemeral });
+        return interaction.editReply('👋 Odpojeno.');
       }
     }
   }
@@ -1221,7 +1236,7 @@ export function startBot(player) {
         channelId: room.id,
         allowed,
         userName,
-        play: (item, requestedBy) => beginPlayback(item, {}, requestedBy, payload => textChannel().send(payload)),
+        play: (item, requestedBy, byId) => beginPlayback(item, { byId }, requestedBy, payload => textChannel().send(payload)),
       });
       await wishlist.start();
       console.log(`Wishlist running in #${room.name}`);

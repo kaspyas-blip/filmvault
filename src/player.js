@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, stat, writeFile } from 'node:fs/promises';
 import { Client } from '@lng2004/discord.js-selfbot-v13';
 import { BaseMediaConnection, GatewayOpCodes, Streamer, playStream } from '@dank074/discord-video-stream';
 import { config } from './config.js';
@@ -12,7 +12,11 @@ import {
   audioTracks, downloadSubtitle, durationSeconds, itemLabel, mediaSource, streamUrl, subtitleTracks,
 } from './jellyfin.js';
 
-const SUBTITLE_FILE = 'tmp/subtitles.ass';
+// Jellyfin needs about a minute to extract a track from a big file, so each one is kept
+// in tmp/ (restarts and recoveries reuse it); a track it could not extract is not tried
+// again for a while.
+const SUBTITLE_RETRY_MS = 30 * 60_000;
+const subtitleFiles = new Map(); // "<item>-<index>" -> Promise of the file path
 // Text drawn in the corner of the video. ffmpeg reads it again twice a second, so the
 // countdown appears and goes without restarting the stream (an empty file draws nothing).
 const OVERLAY_FILE = 'tmp/overlay.txt';
@@ -249,6 +253,29 @@ async function discordIncident() {
   }
 }
 
+function subtitleFile(item, source, stream) {
+  const key = `${item.Id}-${stream.Index}`;
+  if (!subtitleFiles.has(key)) {
+    const file = `tmp/subtitles-${key}.ass`;
+    const job = (async () => {
+      const existing = await stat(file).catch(() => null);
+      if (existing?.size) return file;
+      await mkdir('tmp', { recursive: true });
+      await writeFile(`${file}.new`, await downloadSubtitle(item, source, stream));
+      await rename(`${file}.new`, file);
+      return file;
+    })();
+    subtitleFiles.set(key, job);
+    job.catch(error => {
+      console.warn(`Subtitle download of ${item.Name} track ${stream.Index} failed:`, error.message);
+      setTimeout(() => subtitleFiles.delete(key), SUBTITLE_RETRY_MS).unref();
+    });
+  }
+  return subtitleFiles.get(key).catch(() => {
+    throw new UserError('Tyhle titulky se z Jellyfinu nepodařilo načíst, zkus jiné.');
+  });
+}
+
 function withTimeout(promise, ms, message) {
   let timer;
   const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
@@ -381,21 +408,29 @@ export class Player extends EventEmitter {
 
   /** countdown: label of the episode that follows (see this.countdown), or null. */
   /** autoSkipIntro: skip this item's intro by itself (see tick). */
-  play({ item, channelId, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null, autoSkipIntro = false }) {
+  async play({ item, channelId, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null, autoSkipIntro = false }) {
+    // Outside the queue: the download can take a minute, and pause or stop must not wait for it.
+    const source = mediaSource(item);
+    let subtitle;
+    try {
+      subtitle = await this.prepareSubtitle(item, source, subtitleIndex);
+    } catch (error) {
+      // Jellyfin cannot extract some tracks (an empty forced track): play without them.
+      console.warn(`Subtitles of ${item.Name} failed, playing without them:`, error.message);
+      subtitle = null;
+      subtitleIndex = null;
+    }
     return this.run(async () => {
-      const source = mediaSource(item);
-      let subtitle;
-      try {
-        subtitle = await this.prepareSubtitle(item, source, subtitleIndex);
-      } catch (error) {
-        // Jellyfin cannot extract some tracks (an empty forced track): play without them.
-        console.warn(`Subtitles of ${item.Name} failed, playing without them:`, error.message);
-        subtitle = null;
-        subtitleIndex = null;
-      }
       this.emitStopped(false);
       this.endSession({ keepLive: true });
-      await this.ensureVoice(channelId);
+      try {
+        await this.ensureVoice(channelId);
+      } catch (error) {
+        // The previous item is stopped already; without this it stayed "playing" with no stream.
+        this.item = null;
+        this.reset();
+        throw error;
+      }
       clearTimeout(this.idleTimer);
       Object.assign(this, {
         item, source, audioIndex, subtitleIndex, subtitle, countdown, itemStartedAt: Date.now(), segments: null,
@@ -435,12 +470,13 @@ export class Player extends EventEmitter {
     });
   }
 
-  setTracks({ audioIndex = this.audioIndex, subtitleIndex = this.subtitleIndex }) {
-    return this.run(async () => {
-      if (!this.item) return;
-      const subtitle = subtitleIndex === this.subtitleIndex
-        ? this.subtitle
-        : await this.prepareSubtitle(this.item, this.source, subtitleIndex);
+  async setTracks({ audioIndex = this.audioIndex, subtitleIndex = this.subtitleIndex }) {
+    const { item, source } = this;
+    if (!item) return;
+    // Prepared outside the queue, like in play().
+    const subtitle = subtitleIndex === this.subtitleIndex ? this.subtitle : await this.prepareSubtitle(item, source, subtitleIndex);
+    await this.run(async () => {
+      if (this.item !== item) return;
       const position = this.position();
       Object.assign(this, { audioIndex, subtitleIndex, subtitle });
       if (this.paused) return;
@@ -564,15 +600,7 @@ export class Player extends EventEmitter {
     if (subtitleIndex === null) return null;
     const stream = subtitleTracks(source).find(t => t.Index === subtitleIndex);
     if (!stream) throw new UserError('Tyhle titulky ve filmu nejsou.');
-    if (stream.IsTextSubtitleStream) {
-      await mkdir('tmp', { recursive: true });
-      const data = await downloadSubtitle(item, source, stream).catch(error => {
-        console.warn('Subtitle download failed:', error.message);
-        throw new UserError('Tyhle titulky se z Jellyfinu nepodařilo načíst, zkus jiné.');
-      });
-      await writeFile(SUBTITLE_FILE, data);
-      return { kind: 'text', file: SUBTITLE_FILE };
-    }
+    if (stream.IsTextSubtitleStream) return { kind: 'text', file: await subtitleFile(item, source, stream) };
     if (stream.IsExternal) throw new UserError('Externí obrázkové titulky zatím neumím.');
     return { kind: 'image', index: stream.Index };
   }
