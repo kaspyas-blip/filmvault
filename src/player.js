@@ -384,7 +384,15 @@ export class Player extends EventEmitter {
   play({ item, channelId, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null, autoSkipIntro = false }) {
     return this.run(async () => {
       const source = mediaSource(item);
-      const subtitle = await this.prepareSubtitle(item, source, subtitleIndex);
+      let subtitle;
+      try {
+        subtitle = await this.prepareSubtitle(item, source, subtitleIndex);
+      } catch (error) {
+        // Jellyfin cannot extract some tracks (an empty forced track): play without them.
+        console.warn(`Subtitles of ${item.Name} failed, playing without them:`, error.message);
+        subtitle = null;
+        subtitleIndex = null;
+      }
       this.emitStopped(false);
       this.endSession({ keepLive: true });
       await this.ensureVoice(channelId);
@@ -558,7 +566,11 @@ export class Player extends EventEmitter {
     if (!stream) throw new UserError('Tyhle titulky ve filmu nejsou.');
     if (stream.IsTextSubtitleStream) {
       await mkdir('tmp', { recursive: true });
-      await writeFile(SUBTITLE_FILE, await downloadSubtitle(item, source, stream));
+      const data = await downloadSubtitle(item, source, stream).catch(error => {
+        console.warn('Subtitle download failed:', error.message);
+        throw new UserError('Tyhle titulky se z Jellyfinu nepodařilo načíst, zkus jiné.');
+      });
+      await writeFile(SUBTITLE_FILE, data);
       return { kind: 'text', file: SUBTITLE_FILE };
     }
     if (stream.IsExternal) throw new UserError('Externí obrázkové titulky zatím neumím.');
