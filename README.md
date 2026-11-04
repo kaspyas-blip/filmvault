@@ -4,7 +4,7 @@
 
 A Discord bot that streams films and series from your [Jellyfin](https://jellyfin.org) server, and YouTube or Kick links, into a voice channel as a Go Live stream. You type `/pust Zohan` in a text channel and a few seconds later the film is playing for everyone in the call. Anyone with permission can pause, seek, switch audio or subtitles, and the bot remembers where each film was left off.
 
-The bot's interface (messages, command names, help) is in Czech. The code, comments and this documentation are in English.
+The bot speaks English or Czech (`LANGUAGE`). Commands show English names on English Discord clients and Czech ones on others.
 
 > [!WARNING]
 > **Streaming uses a selfbot.** Discord bots cannot start Go Live, so FilmVault drives a normal user account with its token. That **breaks Discord's Terms of Service and can get the account banned.** Use a throwaway account, never your own. You use this at your own risk; there is no support and no warranty (see [LICENSE](LICENSE)). The project is meant for small private servers with friends.
@@ -14,7 +14,7 @@ The bot's interface (messages, command names, help) is in Czech. The code, comme
 ## Features
 
 **Browse and play**
-- `/pust` with autocomplete, `/filmy` (filter by genre, year, Czech dub; sort), `/serialy` (series, season, episode picker).
+- `/pust` with autocomplete, `/filmy` (filter by genre, year, dub in your language; sort), `/serialy` (series, season, episode picker).
 - Pause, seek (`1:20:00`, `+5`, `-30s`), buttons under the message, all while the Go Live session stays open.
 - Films play at their own frame rate (24 fps is not turned into 30), HDR is tone-mapped to normal colours.
 
@@ -27,7 +27,7 @@ The bot's interface (messages, command names, help) is in Czech. The code, comme
 - **Skip intro:** intros and end credits are detected by comparing the audio of neighbouring episodes (like the Intro Skipper plugin, without the plugin), with a black-frame fallback for credits. The choice is remembered per series.
 
 **Tracks, sound, quality**
-- Audio and subtitle choice at start or during playback; defaults prefer Czech dub, else Czech subtitles.
+- Audio and subtitle choice at start or during playback; defaults prefer a dub in `PREFERRED_LANGUAGE`, else subtitles in it.
 - **Night sound:** dialogue louder, explosions quieter.
 - **Quality:** high (your `.env` values), medium or low for everyone, for evenings when the line cannot carry it.
 
@@ -90,6 +90,9 @@ Copy `.env.example` to `.env`. Defaults are those in `src/config.js`. `.env.exam
 | `TEXT_CHANNEL`, `VOICE_CHANNEL` | Channel name or ID of the first server. Read only on the very first start, then stored in `data/guilds.json`; use `/setup` afterwards and for other servers | `filmsearch`, `film` |
 | `GUILD_ID` | Which server is "the first", only needed if the bot is already on several | unset |
 | `FFMPEG_PATH` | Path to ffmpeg | `ffmpeg` |
+| `LANGUAGE` | Language of what the bot writes: `en` or `cs` | `cs` when unset; `.env.example` sets `en` |
+| `PREFERRED_LANGUAGE` | Audio and subtitles in this language are chosen first (ISO 639 code) | `cs` when unset; `.env.example` sets `en` |
+| `TIMEZONE` | IANA name, for dates and for when a month starts in statistics | `Europe/Prague` |
 | `YTDLP_PATH` | Path to yt-dlp. It updates itself, so the bot must be able to write there | `tools/yt-dlp.exe` on Windows, `yt-dlp` from PATH elsewhere |
 | `VIDEO_ENCODER` | `h264_qsv` (Intel), `h264_nvenc` (NVIDIA), `libx264` (CPU). If a hardware encoder fails early, the bot retries that item with libx264 | `h264_qsv` |
 | `HW_DECODE` | ffmpeg `-hwaccel` method: `d3d11va` (Windows), `cuda`, `vaapi` (Linux), `0` or empty = CPU | none (`.env.example`: `d3d11va`) |
@@ -118,7 +121,7 @@ npm start
 
 On the first start the bot sets up one server from `TEXT_CHANNEL` and `VOICE_CHANNEL` if it can find them. Any other server (or a server where that failed) shows only `/setup` (`/nastavit` in Czech), which a member with the Manage Server permission runs once: pick the text and voice channel and optionally the wishlist room and a role allowed to control the cinema. It applies immediately, no restart. Afterwards the bot posts its help message in the text channel. Join the voice channel, run `/pust` with a title, and click the live stream.
 
-Note on command names: the bot registers its commands with the Czech names listed below. Check `src/commands.js` for whether localized names are present in your version; on an English Discord client localized commands show their English names, otherwise you see the Czech ones.
+Command names: the table below gives both. An English Discord client shows the English one, any other client the Czech one; they are the same command.
 
 ## Commands
 
@@ -149,7 +152,6 @@ Under the now-playing message there are buttons (minus 1 min, pause, plus 1 min,
 - **720p and 30 fps without Nitro** on the streaming account. Set `VIDEO_HEIGHT` and `VIDEO_FPS` higher only if the account has Nitro.
 - Only the first server stores its position in Jellyfin; other servers resume from their own history.
 - Dolby Vision profile 5 (no HDR10 base layer) cannot be tone-mapped. External image subtitles are not supported.
-- The interface is Czech only, and statistics use the Europe/Prague time zone.
 - Seeking and pausing restart ffmpeg at the new position, so there is a short freeze.
 - Web links are limited to YouTube and Kick; live streams cannot be seeked.
 - Linux and Docker: see the next section, untested.
