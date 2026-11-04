@@ -32,7 +32,7 @@ export function parseEnv(text) {
 export function fillEnv(example, answers) {
   const left = new Set(Object.keys(answers));
   const lines = example.split(/\r?\n/).map(line => {
-    const match = /^([A-Z_]+)=/.exec(line);
+    const match = /^\s*([A-Z_]+)=/.exec(line);
     if (!match || !left.has(match[1])) return line;
     left.delete(match[1]);
     return `${match[1]}=${answers[match[1]]}`;
@@ -69,7 +69,7 @@ async function main() {
   prompt.close();
   if (!existing.VIDEO_ENCODER) {
     answers.VIDEO_ENCODER = encoderGuess();
-    answers.HW_DECODE = answers.VIDEO_ENCODER === 'libx264' ? '0' : process.platform === 'win32' ? 'd3d11va' : answers.VIDEO_ENCODER === 'h264_nvenc' ? 'cuda' : 'vaapi';
+    if (!existing.HW_DECODE) answers.HW_DECODE = answers.VIDEO_ENCODER === 'libx264' ? '0' : process.platform === 'win32' ? 'd3d11va' : answers.VIDEO_ENCODER === 'h264_nvenc' ? 'cuda' : 'vaapi';
     console.log(`\nEncoder for this machine: ${answers.VIDEO_ENCODER}`);
   }
   const example = readFileSync('.env.example', 'utf8');

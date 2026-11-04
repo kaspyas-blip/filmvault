@@ -16,11 +16,26 @@ function number(name, fallback) {
 // LANGUAGE is also a gettext variable on Linux (en_US:en), so only its first part counts.
 const language = process.env.LANGUAGE?.trim().toLowerCase().split(/[_.:@-]/)[0] || 'cs';
 
+/** An IANA time zone; a wrong one would otherwise fail only at the first statistics. */
+function timeZone(wanted, fallback) {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: wanted });
+    return wanted;
+  } catch {
+    console.warn(`Unknown TIMEZONE "${wanted}", using ${fallback}`);
+    return fallback;
+  }
+}
+
+const timezone = timeZone(process.env.TIMEZONE?.trim() || 'Europe/Prague', 'Europe/Prague');
+// Times people write ("včera 21:30") are read in the machine's zone; in a container that is UTC.
+process.env.TZ = timezone;
+
 export const config = {
   // Language of everything users read; one without a catalog shows Czech
   language,
   // IANA name; decides when a day starts and which month the statistics belong to
-  timezone: process.env.TIMEZONE?.trim() || 'Europe/Prague',
+  timezone,
   // Audio and subtitles in this language are chosen first (ISO 639 code)
   preferredLanguage: process.env.PREFERRED_LANGUAGE?.trim().toLowerCase() || 'cs',
   botToken: required('BOT_TOKEN'),

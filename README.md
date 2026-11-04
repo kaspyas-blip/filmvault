@@ -153,7 +153,7 @@ Under the now-playing message there are buttons (minus 1 min, pause, plus 1 min,
 | `npm run setup` | Asks for tokens and addresses, picks an encoder that really works here, writes `.env`, then runs the doctor. Keeps what `.env` already has |
 | `npm run doctor` | Checks settings, ffmpeg, Jellyfin and both Discord accounts, and says what to fix. Changes nothing |
 | `npm run diagnostics` | Writes `diagnostics.txt` for a bug report, with secrets and private addresses removed. Read it before sharing |
-| `npm run update` | Moves a git checkout to the newest version and goes back if installing or the checks fail. Never restarts the bot; to update automatically, schedule it for a quiet hour and restart after it |
+| `npm run update` | Moves a git checkout to the newest version and goes back if installing or the checks fail. Stop the bot first; it never restarts it. To update automatically, schedule stop, update and start for a quiet hour |
 
 ## Limitations
 

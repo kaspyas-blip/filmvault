@@ -9,7 +9,9 @@ const SECRET_NAMES = /TOKEN|KEY|PASSWORD|SECRET/i;
 /** Removes the values of secret settings, Discord tokens, signed addresses and private addresses. */
 export function redact(text, env = {}) {
   let clean = text;
-  for (const [name, value] of Object.entries(env)) {
+  for (const [name, written] of Object.entries(env)) {
+    // As .env may write it: in quotes, or with a comment behind.
+    const value = written?.replace(/\s+#.*$/, '').replace(/^(["'])(.*)\1$/, '$2');
     if (SECRET_NAMES.test(name) && value && value.length >= 6) clean = clean.split(value).join(`<${name}>`);
   }
   return clean
@@ -17,8 +19,12 @@ export function redact(text, env = {}) {
     .replace(/Token="[^"]*"/g, 'Token="<hidden>"')
     .replace(/(api_key|apikey|token)=[^&\s"']+/gi, '$1=<hidden>')
     .replace(/https:\/\/[^\s"']*(googlevideo|live-video|playlist)[^\s"']*/g, '<stream address>')
-    .replace(/\b(10|192\.168|100\.\d+|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+(\.\d+)?\b/g, '<private address>')
-    .replace(/[A-Z]:\\Users\\[^\\\s]+/g, '<home>');
+    .replace(/\/\/[^\s/@]+:[^\s/@]+@/g, '//<login>@')
+    .replace(/\b(10|127|192\.168|169\.254|100\.\d+|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+(\.\d+)?\b/g, '<private address>')
+    .replace(/\b(fd[0-9a-f]{2}|fe80):[0-9a-f:]+/gi, '<private address>')
+    .replace(/\b[\w-]+\.(lan|local|home|internal)\b/gi, '<private address>')
+    .replace(/[a-z]:[\\/]users[\\/][^\\/\s]+/gi, '<home>')
+    .replace(/\/(home|Users)\/[^/\s]+/g, '<home>');
 }
 
 function main() {

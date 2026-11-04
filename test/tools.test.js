@@ -19,6 +19,15 @@ test('diagnostics hide secrets but keep what helps', () => {
   assert.ok(out.includes('<BOT_TOKEN>'));
 });
 
+test('diagnostics also hide quoted secrets, private hosts and home folders', () => {
+  const out = redact('key abcdef123456 tok123456789 http://me:pw@nas.lan:8096 fe80::1 127.0.0.1 /home/me/x c:/users/me/x', { JELLYFIN_API_KEY: '"abcdef123456"', STREAMER_TOKEN: 'tok123456789 # spare' });
+  for (const secret of ['abcdef123456', 'tok123456789', 'me:pw', 'nas.lan', 'fe80', '127.0.0.1', '/home/me', 'users/me']) assert.equal(out.includes(secret), false, secret);
+});
+
+test('setup fills an indented line instead of adding a second one', () => {
+  assert.equal(fillEnv('  LANGUAGE=en', { LANGUAGE: 'cs' }), 'LANGUAGE=cs');
+});
+
 test('setup fills the example, keeps its comments and order', () => {
   const filled = fillEnv('# comment\nBOT_TOKEN=\nFFMPEG_PATH=ffmpeg\n', { BOT_TOKEN: 'x', NEW_ONE: 'y' });
   assert.equal(filled, '# comment\nBOT_TOKEN=x\nFFMPEG_PATH=ffmpeg\n\nNEW_ONE=y');

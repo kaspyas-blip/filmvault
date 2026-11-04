@@ -1,6 +1,7 @@
 // npm run update: moves a git checkout to the newest version, and back if that fails.
-// It never restarts the bot, so a film is not cut off; that stays your call.
-// For automatic updates, run it from your scheduler at a quiet hour, then restart the bot.
+// It never restarts the bot; that stays your call. Stop the bot first: on Windows, a running
+// bot holds files that installing has to replace. For automatic updates, schedule the three
+// steps (stop, update, start) for a quiet hour.
 import { spawnSync } from 'node:child_process';
 
 function run(command, args) {
@@ -30,8 +31,9 @@ if (after === before) {
 
 function rollBack(why) {
   console.error(`${why}\nGoing back to ${before.slice(0, 7)}.`);
-  git('reset', '--hard', '--quiet', before);
-  run('npm', ['ci', '--omit=dev']);
+  const reset = git('reset', '--hard', '--quiet', before);
+  const reinstalled = reset.ok && run('npm', ['ci', '--omit=dev']).ok;
+  if (!reinstalled) console.error('Going back did not finish. Stop the bot, then run: npm ci --omit=dev');
   process.exit(1);
 }
 
