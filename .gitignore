@@ -8,4 +8,5 @@ node_modules/
 # Runtime state
 data/
 tmp/
+tools/yt-dlp*
 *.log

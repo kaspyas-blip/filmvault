@@ -26,6 +26,8 @@ export const config = {
   // Jellyfin user whose resume positions and watched marks the cinema uses (default: administrator)
   jellyfinUser: process.env.JELLYFIN_USER?.trim() || null,
   ffmpegPath: process.env.FFMPEG_PATH?.trim() || 'ffmpeg',
+  // Plays YouTube and Kick links; updates itself, so it must be somewhere the bot can write
+  ytDlpPath: process.env.YTDLP_PATH?.trim() || (process.platform === 'win32' ? 'tools/yt-dlp.exe' : 'yt-dlp'),
   encoder: process.env.VIDEO_ENCODER?.trim() || 'h264_qsv',
   height: number('VIDEO_HEIGHT', 720),
   fps: number('VIDEO_FPS', 30),

@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto';
 import { EmbedBuilder } from 'discord.js';
-import { config } from './config.js';
 
 const HELP_TITLE = '🎬 Kino FilmVault – jak na to';
 
-function helpEmbed(voiceChannelId, wishlistChannelId) {
-  const role = config.allowedRole && !/^\d+$/.test(config.allowedRole) ? `roli **${config.allowedRole}**` : 'oprávněnou roli';
+function helpEmbed(voiceChannelId, wishlistChannelId, allowedRole) {
+  const role = allowedRole && !/^\d+$/.test(allowedRole) ? `roli **${allowedRole}**` : 'oprávněnou roli';
   return new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle(HELP_TITLE)
@@ -25,6 +24,10 @@ function helpEmbed(voiceChannelId, wishlistChannelId) {
           '`/statistiky` – žebříčky, rekordy a odznaky; s `kdo` osobní statistiky, `obdobi` měsíc / letos / celkově. Prvního v měsíci přijde souhrn.',
           wishlistChannelId && `**Chceme vidět** – napiš název filmu do <#${wishlistChannelId}> a bot ho přidá na seznam s info z IMDb. 🎲 vybere náhodně film, který máme; přes ✏️ jde nastavit, že film máme jinde (YouTube).`,
         ].filter(Boolean).join('\n'),
+      },
+      {
+        name: '🌐 YouTube a Kick',
+        value: 'Do `/pust` místo názvu vlož odkaz na video, přenos nebo kanál. Živé přenosy jdou pauzovat, ale ne posouvat.',
       },
       {
         name: '⏯️ Během přehrávání',
@@ -54,6 +57,7 @@ function helpEmbed(voiceChannelId, wishlistChannelId) {
         name: '❓ Když něco nejde',
         value: [
           'Obraz se načítá pár sekund, chvilku počkej. Když přehrávání spadne, napiš znovu `/pust` – naváže, kde to spadlo.',
+          'Kino umí hrát jen na jednom serveru naráz. Když hraje jinde, bot to napíše a po dohrání je zase volné.',
           'Na telefonu zní zvuk jako hovor (Discord to tak dělá v každém hlasovém kanálu), sluchátka nebo PC pomůžou.',
         ].join('\n'),
       },
@@ -68,8 +72,8 @@ const REPOST_DELAY_MS = 3000;
  * It used to be pinned; old pinned copies are removed on start. Edits itself when the
  * text changes. wishlistChannelId: the "want to watch" room, or null when it is off.
  */
-export async function keepHelpLast(client, channel, voiceChannelId, wishlistChannelId = null) {
-  const embed = helpEmbed(voiceChannelId, wishlistChannelId);
+export async function keepHelpLast(client, channel, voiceChannelId, wishlistChannelId = null, allowedRole = null) {
+  const embed = helpEmbed(voiceChannelId, wishlistChannelId, allowedRole);
   const version = createHash('sha1').update(JSON.stringify(embed.toJSON())).digest('hex').slice(0, 8);
   embed.setFooter({ text: `Návod se aktualizuje sám · ${version}` });
   const payload = { embeds: [embed] };

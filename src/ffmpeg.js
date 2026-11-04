@@ -58,10 +58,14 @@ export function hdrTransfer(video) {
  * quality: { height, bitrate } (see quality.js)
  * overlayFile: text file drawn in the corner, read again twice a second (empty = nothing), or null
  * sound: 'normal', or 'night' (dialogue louder, loud scenes compressed)
+ * audioUrl: separate sound of a video from the web, or null
+ * headers: HTTP headers for the inputs; the default is for Jellyfin, and its key must
+ * not go anywhere else, so videos from the web bring their own
  */
 export function buildFfmpegArgs({
   url, videoCodec = null, startSeconds = 0, audioIndex = null, subtitle = null, softwareFallback = false, hdr = null,
   sourceFps = null, quality = { height: config.height, bitrate: config.bitrate }, overlayFile = null, sound = 'normal',
+  audioUrl = null, headers = `Authorization: ${authHeader}\r\n`,
 }) {
   const encoderName = softwareFallback ? 'libx264' : config.encoder;
   const encoder = ENCODER_OPTIONS[encoderName] ?? ENCODER_OPTIONS.libx264;
@@ -73,12 +77,12 @@ export function buildFfmpegArgs({
   const codec = videoCodec?.toLowerCase();
   if (codec === 'av1') args.push('-c:v', 'libdav1d');
   else if (config.hwDecode && !softwareFallback && (!codec || HW_DECODABLE.has(codec))) args.push('-hwaccel', config.hwDecode);
-  args.push(
-    '-headers', `Authorization: ${authHeader}\r\n`,
-    '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '10',
-  );
-  if (start > 0) args.push('-ss', String(start));
-  args.push('-i', url);
+  for (const input of audioUrl ? [url, audioUrl] : [url]) {
+    if (headers) args.push('-headers', headers);
+    args.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '10');
+    if (start > 0) args.push('-ss', String(start));
+    args.push('-i', input);
+  }
 
   // Never upscale; keep width even for the encoder. HDR is tone mapped after
   // downscaling, where it is cheap enough for the CPU (it looks washed out otherwise).
@@ -109,7 +113,7 @@ export function buildFfmpegArgs({
   args.push(
     '-filter_complex', graph,
     '-map', '[v]',
-    '-map', audioIndex === null ? '0:a:0?' : `0:${audioIndex}`,
+    '-map', audioUrl ? '1:a:0' : audioIndex === null ? '0:a:0?' : `0:${audioIndex}`,
     '-c:v', encoderName, ...encoder.options,
     '-b:v', `${bitrate}k`,
     '-maxrate:v', `${Math.round(bitrate * 1.4)}k`,

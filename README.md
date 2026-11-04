@@ -6,6 +6,8 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 
 ## Co umí
 
+- **YouTube a Kick** – do `/pust` místo názvu vložíš odkaz na video, přenos nebo kanál. Živé přenosy jdou pauzovat, ale ne posouvat. Potřebuje [yt-dlp](https://github.com/yt-dlp/yt-dlp) (`tools/yt-dlp.exe`, bot si ho sám aktualizuje)
+- **Víc serverů** – správce nového serveru spustí `/nastavit` a server má vlastní historii, statistiky, seznam i nastavení. Vysílat jde jen na jednom serveru naráz, ostatním bot napíše, že se promítá jinde
 - **Vyhledávání a výběr** – `/pust` s našeptáváním, `/filmy` s filtrem žánru, roku a českého dabingu, `/serialy` s výběrem série a dílu
 - **Ovládání** – pauza, posun (`1:20:00`, `+5`, `-30s`), tlačítka pod zprávou, změna zvukové stopy a titulků za běhu
 - **Navazování** – pokračuje tam, kde jste skončili, pozice se ukládá do Jellyfinu
@@ -104,8 +106,9 @@ Zkopíruj `.env.example` jako `.env` a vyplň ho:
 | --- | --- |
 | `BOT_TOKEN` | token ovládacího bota (krok 2) |
 | `STREAMER_TOKEN` | token streamovacího účtu (krok 3) |
-| `TEXT_CHANNEL`, `VOICE_CHANNEL` | název nebo ID textového a hlasového kanálu |
-| `GUILD_ID` | ID serveru – jen pokud je ovládací bot na víc serverech |
+| `TEXT_CHANNEL`, `VOICE_CHANNEL` | název nebo ID textového a hlasového kanálu prvního serveru (při prvním spuštění se uloží do `data/guilds.json`, další servery se nastavují přes `/nastavit`) |
+| `GUILD_ID` | ID prvního serveru – jen pokud je ovládací bot při prvním spuštění už na víc serverech |
+| `YTDLP_PATH` | cesta k yt-dlp pro YouTube a Kick (výchozí `tools/yt-dlp.exe`) |
 | `JELLYFIN_URL` | adresa Jellyfinu, např. `http://192.168.1.50:8096` |
 | `JELLYFIN_API_KEY` | API klíč (krok 1) |
 | `JELLYFIN_USER` | uživatel Jellyfinu pro kino, např. `Kino` |
@@ -144,7 +147,8 @@ Na Linuxu použij třeba službu systemd nebo `pm2`.
 
 | Příkaz | Co dělá |
 | --- | --- |
-| `/pust film [od] [zvuk] [titulky]` | pustí film nebo díl; `od` = `1:20:00`, `45` (minut) nebo `0` (od začátku) |
+| `/nastavit textovy hlasovy [seznam] [role]` | nastaví kino na serveru (jen správce); na novém serveru hned, změna na stávajícím po restartu bota |
+| `/pust film [od] [zvuk] [titulky]` | pustí film nebo díl, nebo odkaz na YouTube či Kick; `od` = `1:20:00`, `45` (minut) nebo `0` (od začátku) |
 | `/pauza`, `/pokracuj` | pozastaví / pustí dál |
 | `/posun cas` | `1:20:00` = na čas, `+5` / `-2` = o minuty, `+30s` = o sekundy |
 | `/zvuk stopa`, `/titulky stopa` | změní zvukovou stopu nebo titulky za běhu |

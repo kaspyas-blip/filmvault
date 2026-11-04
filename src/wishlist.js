@@ -3,8 +3,6 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, StringSelectMenuBuilder,
   TextInputBuilder, TextInputStyle,
 } from 'discord.js';
-import { config } from './config.js';
-import { addWatch, history } from './history.js';
 import { durationSeconds, getItem, listLibrary, saveProgress } from './jellyfin.js';
 import { findMovie, imdbUrl, movieDetails, normalizeTitle, titleSimilarity, tmdbUrl } from './movieinfo.js';
 import { formatTime } from './time.js';
@@ -17,7 +15,6 @@ import { formatTime } from './time.js';
  * are announced here, one message per batch.
  */
 
-const FILE = 'data/wishlist.json';
 const LIST_TITLE = '🎬 Chceme vidět';
 // Films added to Jellyfin turn ✅ within about five minutes.
 const LIBRARY_CACHE_MS = 2 * 60_000;
@@ -55,7 +52,12 @@ export function titlesIn(text) {
     .slice(0, MAX_LINES_PER_MESSAGE);
 }
 
-export function createWishlist({ client, channelId, allowed, userName, play }) {
+/**
+ * dir: the server's data folder; addWatch, history: its watch history;
+ * announceRole: ID or name of the role pinged for new films, or null.
+ */
+export function createWishlist({ client, channelId, allowed, userName, play, dir, addWatch, history, announceRole: announceRoleName = null }) {
+  const FILE = `${dir}/wishlist.json`;
   let state = null; // { listMessageId, imported, films, done, knownMovies, arrivals }
   let writing = Promise.resolve();
   let library = null; // { expires, byImdb, byTmdb, byTitle }
@@ -80,7 +82,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
   function save() {
     const data = JSON.stringify(state, null, 1);
     writing = writing.then(async () => {
-      await mkdir('data', { recursive: true });
+      await mkdir(dir, { recursive: true });
       await writeFile(`${FILE}.tmp`, data);
       await rename(`${FILE}.tmp`, FILE);
     }).catch(error => console.error('Could not save wishlist:', error.message));
@@ -218,7 +220,7 @@ export function createWishlist({ client, channelId, allowed, userName, play }) {
 
   /** The role to ping: ID or name from the config, or null. */
   function announceRole() {
-    const wanted = config.announceRole;
+    const wanted = announceRoleName;
     if (!wanted) return null;
     const role = channel().guild.roles.cache.find(r => r.id === wanted || r.name.toLowerCase() === wanted.toLowerCase());
     if (!role) console.warn(`Announce role "${wanted}" not found, announcing without a ping`);

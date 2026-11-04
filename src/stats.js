@@ -158,7 +158,9 @@ export async function computeStats({ entries, wishes, from = 0, to = Infinity })
       stats.evenings.add(eveningOf(entry.startedAt));
       stats.weekdays[pragueParts(entry.startedAt - DAY_STARTS_HOUR * 3600_000).weekday]++;
     }
-    if (entry.finished) isEpisode ? stats.episodes++ : stats.films++;
+    // YouTube and Kick count as time watched, not as films.
+    const isWeb = entry.id.startsWith('http');
+    if (entry.finished && !isWeb) isEpisode ? stats.episodes++ : stats.films++;
     const seriesName = isEpisode ? item?.SeriesName ?? entry.label.replace(/\s+S\d{2}E\d{2}.*$/, '') : null;
     if (seriesName) stats.series.set(seriesName, (stats.series.get(seriesName) ?? 0) + 1);
     if (!entry.manual) for (const genre of genres) stats.genres.set(genre, (stats.genres.get(genre) ?? 0) + seconds);
@@ -181,7 +183,7 @@ export async function computeStats({ entries, wishes, from = 0, to = Infinity })
       stats.viewerTitles.set(key, (stats.viewerTitles.get(key) ?? 0) + 1);
       const p = person(key);
       p.seconds += viewer.seconds;
-      if (entry.finished) isEpisode ? p.episodes++ : p.films++;
+      if (entry.finished && !isWeb) isEpisode ? p.episodes++ : p.films++;
       if (end.hour >= 2 && end.hour < DAY_STARTS_HOUR) p.nightOwl = true;
       for (const genre of genres) p.genres.set(genre, (p.genres.get(genre) ?? 0) + viewer.seconds);
       if (seriesName) p.series.set(seriesName, (p.series.get(seriesName) ?? 0) + 1);

@@ -408,7 +408,8 @@ export class Player extends EventEmitter {
 
   /** countdown: label of the episode that follows (see this.countdown), or null. */
   /** autoSkipIntro: skip this item's intro by itself (see tick). */
-  async play({ item, channelId, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null, autoSkipIntro = false }) {
+  /** guildId, quality, sound: of the server it plays for (the account is on one call at a time). */
+  async play({ item, guildId = this.guildId, channelId, quality = this.quality, sound = this.sound, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null, autoSkipIntro = false }) {
     // Outside the queue: the download can take a minute, and pause or stop must not wait for it.
     const source = mediaSource(item);
     let subtitle;
@@ -424,7 +425,7 @@ export class Player extends EventEmitter {
       this.emitStopped(false);
       this.endSession({ keepLive: true });
       try {
-        await this.ensureVoice(channelId);
+        await this.ensureVoice(channelId, guildId);
       } catch (error) {
         // The previous item is stopped already; without this it stayed "playing" with no stream.
         this.item = null;
@@ -433,7 +434,7 @@ export class Player extends EventEmitter {
       }
       clearTimeout(this.idleTimer);
       Object.assign(this, {
-        item, source, audioIndex, subtitleIndex, subtitle, countdown, itemStartedAt: Date.now(), segments: null,
+        item, source, audioIndex, subtitleIndex, subtitle, countdown, quality, sound, itemStartedAt: Date.now(), segments: null,
         introSkipped: false, autoSkipIntro, stallRestarts: 0,
       });
       this.startSession(this.clamp(startSeconds));
@@ -567,10 +568,15 @@ export class Player extends EventEmitter {
     }
   }
 
-  async ensureVoice(channelId) {
+  async ensureVoice(channelId, guildId) {
     if (this.channelId === channelId && this.streamer.voiceConnection) return;
-    if (this.streamer.voiceConnection) this.leaveVoice();
+    // Leaves the old call under the server it is on, before moving to the new one.
+    if (this.streamer.voiceConnection) {
+      this.countdown = null;
+      this.leaveVoice();
+    }
     this.channelId = null;
+    this.guildId = guildId;
     try {
       await this.joinVoice(channelId);
     } catch (error) {
@@ -703,11 +709,14 @@ export class Player extends EventEmitter {
         writeFileSync(OVERLAY_FILE, '', { flag: 'a' });
       } catch {}
     }
+    const { web } = this.item;
     const args = buildFfmpegArgs({
-      url: streamUrl(this.item, this.source),
+      url: web?.videoUrl ?? streamUrl(this.item, this.source),
+      ...(web ? { audioUrl: web.audioUrl, headers: web.headers } : {}),
       videoCodec: video?.Codec ?? null,
       hdr: hdrTransfer(video),
-      startSeconds,
+      // A live stream always plays from now.
+      startSeconds: web?.live ? 0 : startSeconds,
       audioIndex: this.audioTrack?.Index ?? null,
       subtitle: this.subtitle,
       softwareFallback,
