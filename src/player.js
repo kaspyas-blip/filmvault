@@ -39,6 +39,9 @@ const HARDWARE_RETRY_WINDOW_MS = 15_000;
 const RESTART_SKIP_KEYFRAMES = 2;
 // Sound waits for the picture after a restart, but not longer than this.
 const AUDIO_HOLD_MAX_MS = 3000;
+// A web video played from its start holds the first frame this long. Viewers' picture takes
+// a moment to catch on (see patchConnection), and unlike a film's logos, its first words count.
+const WEB_LEAD_IN_SECONDS = 5;
 // Receivers may buffer up to this much (10 ms units) so resent packets arrive in time.
 // Viewers' stats show Discord does not pass a minimum on (Minimum Playout Delay 0 ms).
 const PLAYOUT_DELAY_MAX = 600;
@@ -392,7 +395,7 @@ export class Player extends EventEmitter {
     // The film's own time of the frames sent: ffmpeg starts at the whole second, and
     // a hiccup in its output does not move the position on (the credits cut relies on it).
     const { startSeconds, mediaMs } = this.session;
-    return mediaMs ? Math.floor(startSeconds) + mediaMs / 1000 : startSeconds;
+    return Math.max(0, mediaMs ? Math.floor(startSeconds) + mediaMs / 1000 : startSeconds);
   }
 
   get audioTrack() {
@@ -710,7 +713,9 @@ export class Player extends EventEmitter {
       } catch {}
     }
     const { web } = this.item;
+    const leadIn = web && !web.live && startSeconds === 0 ? WEB_LEAD_IN_SECONDS : 0;
     const args = buildFfmpegArgs({
+      leadIn,
       url: web?.videoUrl ?? streamUrl(this.item, this.source),
       ...(web ? { audioUrl: web.audioUrl, headers: web.headers } : {}),
       videoCodec: video?.Codec ?? null,
@@ -727,7 +732,8 @@ export class Player extends EventEmitter {
     });
     const ac = new AbortController();
     const ff = spawn(config.ffmpegPath, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    const session = { ac, ff, startSeconds, startedAt: null, createdAt: Date.now() };
+    // The held frame is not part of the video: its time starts when the frame moves on.
+    const session = { ac, ff, startSeconds: startSeconds - leadIn, startedAt: null, createdAt: Date.now() };
     this.session = session;
     this.paused = false;
     this.pausedPosition = startSeconds;

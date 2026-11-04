@@ -14,10 +14,7 @@ const FONT = process.platform === 'win32' ? 'C\\:/Windows/Fonts/segoeuib.ttf' : 
 // Night sound: the centre channel (dialogue in 5.1 films) goes into the stereo mix at
 // full level instead of -3 dB, and a compressor without look-ahead (no added delay)
 // tames loud scenes, with the quiet ones raised. The limiter keeps peaks from clipping.
-const NIGHT_SOUND = [
-  '-center_mix_level', '1',
-  '-af', 'acompressor=threshold=0.06:ratio=4:attack=15:release=400:makeup=2.5,alimiter=limit=0.9:level=false',
-];
+const NIGHT_FILTER = 'acompressor=threshold=0.06:ratio=4:attack=15:release=400:makeup=2.5,alimiter=limit=0.9:level=false';
 // NTSC rates as exact fractions, so frames are not dropped or repeated over time.
 const EXACT_RATES = [[24000 / 1001, '24000/1001'], [30000 / 1001, '30000/1001']];
 
@@ -61,11 +58,12 @@ export function hdrTransfer(video) {
  * audioUrl: separate sound of a video from the web, or null
  * headers: HTTP headers for the inputs; the default is for Jellyfin, and its key must
  * not go anywhere else, so videos from the web bring their own
+ * leadIn: seconds the first frame holds, with the sound waiting too, before anything plays
  */
 export function buildFfmpegArgs({
   url, videoCodec = null, startSeconds = 0, audioIndex = null, subtitle = null, softwareFallback = false, hdr = null,
   sourceFps = null, quality = { height: config.height, bitrate: config.bitrate }, overlayFile = null, sound = 'normal',
-  audioUrl = null, headers = `Authorization: ${authHeader}\r\n`,
+  audioUrl = null, headers = `Authorization: ${authHeader}\r\n`, leadIn = 0,
 }) {
   const encoderName = softwareFallback ? 'libx264' : config.encoder;
   const encoder = ENCODER_OPTIONS[encoderName] ?? ENCODER_OPTIONS.libx264;
@@ -100,6 +98,8 @@ export function buildFfmpegArgs({
       + `:fontsize=${size}:fontcolor=white:line_spacing=${Math.round(size / 4)}`
       + `:box=1:boxcolor=black@0.6:boxborderw=${Math.round(size / 2)}:x=w-tw-${size * 2}:y=h-th-${size * 2},${tail}`;
   }
+  if (leadIn) tail = `tpad=start_duration=${leadIn}:start_mode=clone,${tail}`;
+  const audioFilters = [sound === 'night' && NIGHT_FILTER, leadIn && `adelay=delays=${leadIn * 1000}:all=1`].filter(Boolean);
   let graph;
   if (subtitle?.kind === 'image') {
     graph = `[0:v:0][0:${subtitle.index}]overlay=eof_action=pass,${scale},${tail}[v]`;
@@ -121,7 +121,8 @@ export function buildFfmpegArgs({
     '-bf', '0',
     '-g', String(Math.round(fps * 2)),
     '-force_key_frames', 'expr:gte(t,n_forced*1)',
-    ...(sound === 'night' ? NIGHT_SOUND : []),
+    ...(sound === 'night' ? ['-center_mix_level', '1'] : []),
+    ...(audioFilters.length ? ['-af', audioFilters.join(',')] : []),
     '-ac', '2', '-lfe_mix_level', '1', '-ar', '48000',
     '-c:a', 'libopus', '-b:a', `${config.audioBitrate}k`,
     '-f', 'nut', 'pipe:1',
