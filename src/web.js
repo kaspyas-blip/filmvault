@@ -20,6 +20,12 @@ const MAX_NAME = 200;
 const CODECS = { avc1: 'h264', hvc1: 'hevc', hev1: 'hevc', vp09: 'vp9', vp9: 'vp9', av01: 'av1' };
 const SENT_HEADERS = ['User-Agent', 'Referer', 'Origin'];
 
+/** "kick.com/xqc", as people write it, with its https://; anything else stays as it is. */
+export function webAddress(text) {
+  const trimmed = text?.trim() ?? '';
+  return /^(?:(?:www|m|music)\.)?(?:youtube\.com|youtu\.be|kick\.com)\//i.test(trimmed) ? `https://${trimmed}` : trimmed;
+}
+
 export function isLink(text) {
   return /^https?:\/\//i.test(text?.trim() ?? '');
 }

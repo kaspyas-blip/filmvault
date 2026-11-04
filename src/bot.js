@@ -19,7 +19,7 @@ import { episodeSegments } from './segments.js';
 import { SOUND_MODES, createSettings } from './settings.js';
 import { PERIODS, computeStats, periodRange, personEmbed, personKeyFor, serverEmbed } from './stats.js';
 import { formatTime, parseTime, parseWhen } from './time.js';
-import { isLink, isWebUrl, updateYtDlp, webItem } from './web.js';
+import { isLink, isWebUrl, updateYtDlp, webAddress, webItem } from './web.js';
 import { createWishlist } from './wishlist.js';
 
 // The streaming account is on one call at a time, so one film plays across all servers.
@@ -173,8 +173,9 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     return item;
   }
 
-  async function resolveItem(value) {
-    if (ITEM_ID.test(value) || isWebUrl(value)) return cachedItem(value.trim());
+  async function resolveItem(written) {
+    const value = webAddress(written);
+    if (ITEM_ID.test(value) || isWebUrl(value)) return cachedItem(value);
     if (isLink(value)) throw new UserError('Odkazy umím jen z YouTube a Kicku.');
     const [hit] = await searchItems(value, 1);
     if (!hit) throw new UserError(`Nic jako „${value}“ jsem v Jellyfinu nenašel.`);
@@ -207,9 +208,9 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
       const q = focused.value.toLowerCase();
       choices = (await genres()).filter(g => g.Name.toLowerCase().includes(q)).map(g => ({ name: choiceName(g.Name), value: g.Id }));
     } else if (['pust', 'zapsat'].includes(interaction.commandName) && focused.name === 'film') {
-      if (isLink(focused.value)) {
+      const link = webAddress(focused.value);
+      if (isLink(link)) {
         // A choice's value holds 100 characters; a longer link is sent as written.
-        const link = focused.value.trim();
         choices = isWebUrl(link) && link.length <= 100 ? [{ name: choiceName(`▶ ${link}`), value: link }] : [];
       } else {
         const items = await searchItems(focused.value, 25);
@@ -1182,7 +1183,8 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
 
   async function replyError(interaction, error) {
     const text = error instanceof UserError ? error.message : `Něco se pokazilo: ${error.message}`;
-    if (!(error instanceof UserError)) console.error(error);
+    if (error instanceof UserError) console.log(`Refused in ${guild.name}: ${text}`);
+    else console.error(error);
     try {
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({ content: text, flags: MessageFlags.Ephemeral });
@@ -1259,9 +1261,11 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const isList = (interaction.isButton() || interaction.isStringSelectMenu()) && /^f[lsh]:/.test(interaction.customId);
     if (!interaction.isChatInputCommand() && !isList && !(interaction.isButton() && interaction.customId.startsWith('fv:'))) return;
     if (interaction.channelId !== textChannelId) {
+      console.log(`Refused in ${guild.name}: used outside the cinema's text channel`);
       return interaction.reply({ content: `Kino se ovládá jen v <#${textChannelId}>.`, flags: MessageFlags.Ephemeral });
     }
     if (!allowed(interaction)) {
+      console.log(`Refused in ${guild.name}: ${userName(interaction)} lacks the cinema's role`);
       return interaction.reply({ content: 'Na ovládání kina nemáš oprávnění.', flags: MessageFlags.Ephemeral });
     }
     const received = Date.now();
