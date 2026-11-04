@@ -5,6 +5,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
  * sound: 'normal' | 'night'
  * skipIntro: series IDs whose intros are skipped by themselves
  * summaryMonth: 'YYYY-MM' of the last monthly statistics post
+ * resumeBackfilled: old messages have got their go-on buttons
  */
 const DEFAULTS = { sound: 'normal', skipIntro: [], summaryMonth: null };
 

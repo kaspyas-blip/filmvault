@@ -43,6 +43,8 @@ const WATCHED_TAIL = 0.92;
 // otherwise it goes back this much, for people to catch up.
 const RESUME_MIN_SECONDS = 60;
 const RESUME_REWIND_SECONDS = 5;
+const DEFAULT_TRACKS = 'd';
+const BACKFILL_MESSAGES = 1000;
 const POSTER_FILE = 'poster.jpg';
 const AUTOPLAY_FILE = 'autoplay.json';
 const AUTOPLAY_MAX_AGE_MS = 10 * 60_000;
@@ -296,14 +298,51 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
    * For a message of something not finished: a button that goes on from where it stopped.
    * The ID carries it all ("fr:<position>:<audio>:<subtitle>:<item>"), so it works after
    * restarts; an ID holds 100 characters, which a long web address may not fit.
+   * audio DEFAULT_TRACKS: not known, the usual choice (Czech first) is made when clicked.
    */
+  function resumeRow(itemId, position, audio, subtitle, live = false) {
+    const id = `fr:${Math.floor(position)}:${audio ?? ''}:${subtitle ?? ''}:${itemId}`;
+    if (id.length > 100) return [];
+    const label = live ? '▶ Naladit znovu' : position < RESUME_MIN_SECONDS ? '▶ Pustit znovu' : `▶ Pokračovat od ${formatTime(position)}`;
+    return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(ButtonStyle.Primary))];
+  }
+
   function resumeRows(item) {
     if (lastStop?.itemId !== item.Id || lastStop.done) return [];
-    const { position, audio, subtitle } = lastStop;
-    const id = `fr:${Math.floor(position)}:${audio ?? ''}:${subtitle ?? ''}:${item.Id}`;
-    if (id.length > 100) return [];
-    const label = item.web?.live ? '▶ Naladit znovu' : position < RESUME_MIN_SECONDS ? '▶ Pustit znovu' : `▶ Pokračovat od ${formatTime(position)}`;
-    return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(ButtonStyle.Primary))];
+    return resumeRow(item.Id, lastStop.position, lastStop.audio, lastStop.subtitle, item.web?.live);
+  }
+
+  /**
+   * Messages from before the button existed get it once, from the history: the newest
+   * message of each title, when the title's latest entry is not finished. A message of
+   * a stopped item is the one with just a title and text (now-playing ones have fields).
+   */
+  async function backfillResumeButtons() {
+    if ((await loadSettings()).resumeBackfilled) return;
+    const latest = new Map();
+    for (const entry of await history()) if (!latest.has(entry.label)) latest.set(entry.label, entry);
+    const seen = new Set();
+    let added = 0;
+    let before;
+    for (let scanned = 0; scanned < BACKFILL_MESSAGES;) {
+      const batch = await textChannel().messages.fetch({ limit: 100, before });
+      if (!batch.size) break;
+      scanned += batch.size;
+      before = batch.last().id;
+      for (const message of batch.values()) {
+        const embed = message.embeds[0];
+        const entry = latest.get(embed?.title);
+        if (message.author.id !== client.user.id || !entry || embed.fields.length || seen.has(entry.label)) continue;
+        seen.add(entry.label);
+        if (entry.finished || message.components.length) continue;
+        const components = resumeRow(entry.id, entry.position, DEFAULT_TRACKS, '');
+        if (!components.length) continue;
+        await message.edit({ components });
+        added++;
+      }
+    }
+    await updateSettings({ resumeBackfilled: true });
+    console.log(`Added the go-on button to ${added} old message(s) in ${guild.name}`);
   }
 
   function endedPayload(item, text) {
@@ -320,7 +359,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const index = value => (value === '' ? null : Number(value));
     await startPlayback(interaction, await cachedItem(id), {
       startSeconds: seconds < RESUME_MIN_SECONDS ? 0 : seconds - RESUME_REWIND_SECONDS,
-      tracks: { audioIndex: index(audio), subtitleIndex: index(subtitle) },
+      tracks: audio === DEFAULT_TRACKS ? null : { audioIndex: index(audio), subtitleIndex: index(subtitle) },
     });
     // The new message has the controls now.
     await interaction.message.edit({ components: [] }).catch(() => {});
@@ -1449,6 +1488,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     helpWishlistId = await startWishlist();
     await keepHelpLast(client, text, voice.id, helpWishlistId, allowedRole).catch(error => console.error('Help message failed:', error.message));
     await playAfterRestart();
+    backfillResumeButtons().catch(error => console.error('Adding go-on buttons failed:', error.message));
     setInterval(() => postMonthlySummary().catch(error => console.error('Monthly summary failed:', error)), SUMMARY_CHECK_MS).unref();
     postMonthlySummary().catch(error => console.error('Monthly summary failed:', error));
   }
