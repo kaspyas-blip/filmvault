@@ -6,7 +6,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { config } from './config.js';
 import { loadGuilds, saveGuilds } from './guilds.js';
-import { keepHelpLast } from './help.js';
+import { helpTopic, keepHelpLast } from './help.js';
 import { createHistory, entryKey } from './history.js';
 import {
   SORTS, audioTracks, authHeader, defaultTracks, downloadPoster, durationSeconds, getItem, isCzech, itemLabel, listEpisodes, listGenres,
@@ -145,6 +145,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   let sound = 'normal';
   let starting = 0; // playbacks being started (the subtitles can take a minute)
   let wishlist = null;
+  let helpWishlistId = null; // the wishlist room once it runs, for the help
   const itemCache = new Map();
   const czechListCache = new Map();
   let genreCache = null;
@@ -1254,6 +1255,12 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
         return interaction.respond([]).catch(() => {});
       });
     }
+    // Reading the help takes no role, and the answer is only for whoever clicked.
+    if (interaction.isButton() && interaction.customId.startsWith('help:')) {
+      const embed = helpTopic(interaction.customId, helpWishlistId);
+      const answer = embed ? { embeds: [embed] } : { content: 'Tahle část návodu už není.' };
+      return interaction.reply({ ...answer, flags: MessageFlags.Ephemeral }).catch(error => console.warn('Help answer failed:', error.message));
+    }
     if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) && interaction.customId.startsWith('fw:')) {
       if (!wishlist) return interaction.reply({ content: 'Seznam filmů teď nefunguje.', flags: MessageFlags.Ephemeral });
       return wishlist.handleInteraction(interaction).catch(error => replyError(interaction, error));
@@ -1390,8 +1397,8 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     sound = (await loadSettings()).sound;
     await guild.commands.set([...commands, setupCommand]);
     console.log(`Registered ${commands.length + 1} slash commands in ${guild.name}; text #${text.name}, voice ${voice.name}`);
-    const room = await startWishlist();
-    await keepHelpLast(client, text, voice.id, room, allowedRole).catch(error => console.error('Help message failed:', error.message));
+    helpWishlistId = await startWishlist();
+    await keepHelpLast(client, text, voice.id, helpWishlistId, allowedRole).catch(error => console.error('Help message failed:', error.message));
     await playAfterRestart();
     setInterval(() => postMonthlySummary().catch(error => console.error('Monthly summary failed:', error)), SUMMARY_CHECK_MS).unref();
     postMonthlySummary().catch(error => console.error('Monthly summary failed:', error));
