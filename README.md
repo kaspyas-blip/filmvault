@@ -146,6 +146,15 @@ All of these work only in the cinema's text channel (and only for the allowed ro
 
 Under the now-playing message there are buttons (minus 1 min, pause, plus 1 min, plus 10 min, stop; for series also skip intro and cancel next episode). The cinema stops 2 minutes after everyone leaves the call.
 
+## Tools
+
+| Command | What it does |
+| --- | --- |
+|  | Asks for tokens and addresses, picks an encoder that really works here, writes , then runs the doctor. Keeps what  already has |
+|  | Checks settings, ffmpeg, Jellyfin and both Discord accounts, and says what to fix. Changes nothing |
+|  | Writes  for a bug report, with secrets and private addresses removed. Read it before sharing |
+|  | Moves a git checkout to the newest version and goes back if installing or the checks fail. Never restarts the bot; to update automatically, schedule it for a quiet hour and restart after it |
+
 ## Limitations
 
 - **One film at a time across all servers.** The streaming account can be in one call at once. Other servers get a "playing elsewhere" message.

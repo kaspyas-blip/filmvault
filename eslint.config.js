@@ -8,7 +8,7 @@ export default [
       globals: {
         process: 'readonly', console: 'readonly', Buffer: 'readonly', setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly',
         clearInterval: 'readonly', fetch: 'readonly', URL: 'readonly', AbortController: 'readonly', AbortSignal: 'readonly', performance: 'readonly',
-        Response: 'readonly', globalThis: 'readonly', structuredClone: 'readonly',
+        Response: 'readonly', globalThis: 'readonly', structuredClone: 'readonly', Intl: 'readonly',
       },
     },
     rules: {

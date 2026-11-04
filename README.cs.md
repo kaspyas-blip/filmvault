@@ -189,6 +189,13 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
 - Při prvním spuštění bot projde starší zprávy v roomce a filmy z nich převezme.
 - **Nové filmy v Jellyfinu** bot ohlásí v roomce jednou zprávou za celou dávku: počká, až se 10 minut nic nepřidá, pak vypíše všechny nové filmy (délka, hodnocení, žánr), označí lidi, kterým se tím splnilo přání, a nabídne je rovnou pustit. Volitelně může označit i roli (`ANNOUNCE_ROLE`); aby to přišlo jako upozornění, musí mít role zapnuté *Povolit všem @zmínit tuto roli*, nebo bot oprávnění *Zmínit @everyone, @here a všechny role*.
 
+## Nástroje
+
+-  – průvodce: zeptá se na tokeny a adresy, vybere fungující kodér, zapíše  a spustí kontrolu.
+-  – zkontroluje nastavení, ffmpeg, Jellyfin a oba účty Discordu a řekne, co opravit.
+-  – vytvoří  bez tajných údajů, k nahlášení chyby.
+-  – aktualizuje git klon a při selhání se vrátí zpět. Bota nerestartuje.
+
 ## Když něco nejde
 
 | Problém | Řešení |

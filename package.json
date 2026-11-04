@@ -13,8 +13,11 @@
   "scripts": {
     "start": "node index.js",
     "test": "node --test --test-timeout=30000 test/*.test.js",
-    "lint": "eslint src test tools/doctor.mjs index.js",
-    "doctor": "node tools/doctor.mjs"
+    "lint": "eslint src test tools/doctor.mjs tools/setup.mjs tools/diagnostics.mjs tools/update.mjs index.js",
+    "doctor": "node tools/doctor.mjs",
+    "setup": "node tools/setup.mjs",
+    "diagnostics": "node tools/diagnostics.mjs",
+    "update": "node tools/update.mjs"
   },
   "engines": {
     "node": ">=22.4.0"
