@@ -1,0 +1,29 @@
+# Untested on real hardware.
+services:
+  filmvault:
+    build: .
+    init: true                 # reaps ffmpeg child processes
+    restart: unless-stopped
+    env_file: .env             # tokens, Jellyfin, channels
+    # `environment` wins over `env_file`, so a .env copied from .env.example (which
+    # names h264_qsv and d3d11va, Windows values) cannot break the container.
+    environment:
+      YTDLP_PATH: /app/tools/yt-dlp
+      VIDEO_ENCODER: libx264
+      HW_DECODE: "0"
+      # Intel GPU: remove the two software lines above and use these instead,
+      # together with the devices block below. The image has no Intel media driver.
+      # VIDEO_ENCODER: h264_qsv
+      # HW_DECODE: vaapi
+    # JELLYFIN_URL in .env must be reachable from inside the container: "localhost" is
+    # the container itself. Use the host's LAN address or a compose service name.
+    volumes:
+      - filmvault-data:/app/data
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:               # the render group's numeric GID may be needed: getent group render
+    #   - video
+    #   - render
+
+volumes:
+  filmvault-data:

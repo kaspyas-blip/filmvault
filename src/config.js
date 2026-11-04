@@ -13,7 +13,16 @@ function number(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+// LANGUAGE is also a gettext variable on Linux (en_US:en), so only its first part counts.
+const language = process.env.LANGUAGE?.trim().toLowerCase().split(/[_.:@-]/)[0] || 'cs';
+
 export const config = {
+  // Language of everything users read; one without a catalog shows Czech
+  language,
+  // IANA name; decides when a day starts and which month the statistics belong to
+  timezone: process.env.TIMEZONE?.trim() || 'Europe/Prague',
+  // Audio and subtitles in this language are chosen first (ISO 639 code)
+  preferredLanguage: process.env.PREFERRED_LANGUAGE?.trim().toLowerCase() || 'cs',
   botToken: required('BOT_TOKEN'),
   streamerToken: required('STREAMER_TOKEN'),
   // Optional when the control bot is only on one server

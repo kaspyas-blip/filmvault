@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { t } from './i18n.js';
 
 export const authHeader =
   `MediaBrowser Client="FilmVault", Device="MiniPC", DeviceId="filmvault-bot", Version="1.0.0", Token="${config.jellyfinApiKey}"`;
@@ -56,10 +57,10 @@ export async function searchItems(query, limit = 25) {
 }
 
 export const SORTS = {
-  nazev: { label: 'podle názvu', sortBy: 'SortName', sortOrder: 'Ascending' },
-  pridano: { label: 'naposledy přidané', sortBy: 'DateCreated,SortName', sortOrder: 'Descending,Ascending' },
-  rok: { label: 'od nejnovějších', sortBy: 'ProductionYear,SortName', sortOrder: 'Descending,Ascending' },
-  hodnoceni: { label: 'podle hodnocení', sortBy: 'CommunityRating,SortName', sortOrder: 'Descending,Ascending' },
+  nazev: { label: t('sort.nazev'), sortBy: 'SortName', sortOrder: 'Ascending' },
+  pridano: { label: t('sort.pridano'), sortBy: 'DateCreated,SortName', sortOrder: 'Descending,Ascending' },
+  rok: { label: t('sort.rok'), sortBy: 'ProductionYear,SortName', sortOrder: 'Descending,Ascending' },
+  hodnoceni: { label: t('sort.hodnoceni'), sortBy: 'CommunityRating,SortName', sortOrder: 'Descending,Ascending' },
 };
 
 function yearList(from, to) {
@@ -118,27 +119,40 @@ export function resumeSeconds(item) {
   return Math.max(0, seconds - 5);
 }
 
-const CZECH = /^(ces|cze|cs|czech|čeština)$/i;
+// How a language shows up in Jellyfin's streams: its ISO 639 codes (and the language's
+// own name) in Language, or a word in the Title ("Česky 5.1"). Any other code in
+// PREFERRED_LANGUAGE matches streams that carry exactly that code.
+const LANGUAGES = {
+  cs: { code: /^(ces|cze|cs|czech|čeština)$/i, title: /česk|czech/i },
+  sk: { code: /^(slk|slo|sk|slovak|slovenčina)$/i, title: /slovensk|slovak/i },
+  en: { code: /^(eng|en|english)$/i, title: /english|anglick/i },
+  de: { code: /^(deu|ger|de|german|deutsch)$/i, title: /deutsch|german|německ/i },
+  pl: { code: /^(pol|pl|polish|polski)$/i, title: /polsk|polish/i },
+  fr: { code: /^(fra|fre|fr|french|français)$/i, title: /fran[cç]|french/i },
+  es: { code: /^(spa|es|spanish|español)$/i, title: /espa[nñ]ol|spanish|španěl/i },
+};
+const preferred = LANGUAGES[config.preferredLanguage]
+  ?? { code: new RegExp(`^${config.preferredLanguage.replace(/[^a-z0-9]/g, '\\$&')}$`, 'i'), title: null };
 
-export function isCzech(stream) {
-  return CZECH.test(stream.Language ?? '') || /česk|czech/i.test(stream.Title ?? '');
+export function isPreferred(stream) {
+  return preferred.code.test(stream.Language ?? '') || (preferred.title?.test(stream.Title ?? '') ?? false);
 }
 
 /**
- * Czech audio when the file has it (plus Czech forced subtitles if any); otherwise
- * the chosen/default audio with full Czech subtitles. Image subtitles in external
- * files are skipped because the player cannot burn them in.
+ * Audio in the preferred language when the file has it (plus its forced subtitles if
+ * any); otherwise the chosen/default audio with full subtitles in that language. Image
+ * subtitles in external files are skipped because the player cannot burn them in.
  */
 export function defaultTracks(source, audioIndex = null) {
   const audio = audioTracks(source);
   const subs = subtitleTracks(source);
-  const dub = t => isCzech(t) && !/koment|comment/i.test(t.Title ?? '');
+  const dub = t => isPreferred(t) && !/koment|comment/i.test(t.Title ?? '');
   const chosen = audio.find(t => t.Index === audioIndex) ?? audio.find(dub) ?? audio.find(t => t.IsDefault) ?? audio[0];
-  const czechSubs = subs.filter(t => isCzech(t) && (t.IsTextSubtitleStream || !t.IsExternal));
-  const subtitle = chosen && isCzech(chosen)
-    ? czechSubs.find(t => t.IsForced)
-    : czechSubs.find(t => !t.IsForced && t.IsTextSubtitleStream)
-      ?? czechSubs.find(t => !t.IsForced)
+  const preferredSubs = subs.filter(t => isPreferred(t) && (t.IsTextSubtitleStream || !t.IsExternal));
+  const subtitle = chosen && isPreferred(chosen)
+    ? preferredSubs.find(t => t.IsForced)
+    : preferredSubs.find(t => !t.IsForced && t.IsTextSubtitleStream)
+      ?? preferredSubs.find(t => !t.IsForced)
       ?? subs.find(t => t.IsForced && t.IsDefault);
   return { audioIndex: chosen?.Index ?? null, subtitleIndex: subtitle?.Index ?? null };
 }
@@ -174,7 +188,7 @@ export function itemLabel(item) {
   if (item.Type === 'Episode') {
     const season = String(item.ParentIndexNumber ?? 0).padStart(2, '0');
     const episode = String(item.IndexNumber ?? 0).padStart(2, '0');
-    return `${item.SeriesName ?? 'Seriál'} S${season}E${episode} – ${item.Name}`;
+    return `${item.SeriesName ?? t('jellyfin.series')} S${season}E${episode} – ${item.Name}`;
   }
   return item.ProductionYear ? `${item.Name} (${item.ProductionYear})` : item.Name;
 }
@@ -194,8 +208,8 @@ export function subtitleTracks(source) {
 }
 
 export function trackLabel(stream) {
-  const name = stream.DisplayTitle || stream.Title || stream.Language || `Stopa ${stream.Index}`;
-  return stream.IsExternal ? `${name} (externí)` : name;
+  const name = stream.DisplayTitle || stream.Title || stream.Language || t('jellyfin.track', { index: stream.Index });
+  return stream.IsExternal ? t('jellyfin.external', { name }) : name;
 }
 
 export function durationSeconds(item) {

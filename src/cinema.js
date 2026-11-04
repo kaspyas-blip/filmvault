@@ -8,8 +8,9 @@ import { commands, setupCommand } from './commands.js';
 import { config } from './config.js';
 import { helpTopic, keepHelpLast } from './help.js';
 import { createHistory } from './history.js';
+import { t } from './i18n.js';
 import {
-  audioTracks, authHeader, defaultTracks, downloadPoster, durationSeconds, getItem, isCzech, itemLabel,
+  audioTracks, authHeader, defaultTracks, downloadPoster, durationSeconds, getItem, isPreferred, itemLabel,
   mediaSource, nextEpisode, resumeSeconds, saveProgress, searchItems, subtitleTracks, trackLabel,
 } from './jellyfin.js';
 import { movieInfoEnabled } from './movieinfo.js';
@@ -23,7 +24,7 @@ import { isLink, isWebUrl, webAddress, webItem } from './web.js';
 import { createWishlist } from './wishlist.js';
 
 // The streaming account is on one call at a time, so one film plays across all servers.
-const BUSY = 'Kino teď promítá na jiném serveru, zkus to později.';
+const BUSY = t('cinema.busy');
 
 const ALONE_LEAVE_MS = 2 * 60_000;
 const ITEM_CACHE_MS = 60_000;
@@ -112,9 +113,9 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
   async function resolveItem(written) {
     const value = webAddress(written);
     if (ITEM_ID.test(value) || isWebUrl(value)) return cachedItem(value);
-    if (isLink(value)) throw new UserError('Odkazy umím jen z YouTube a Kicku.');
+    if (isLink(value)) throw new UserError(t('cinema.onlyYoutubeKick'));
     const [hit] = await searchItems(value, 1);
-    if (!hit) throw new UserError(`Nic jako „${value}“ jsem v Jellyfinu nenašel.`);
+    if (!hit) throw new UserError(t('cinema.notFound', { query: value }));
     return cachedItem(hit.Id);
   }
 
@@ -130,7 +131,7 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const choices = filterTracks(subtitleTracks(source), query).map(t => ({
       name: choiceName(trackLabel(t)), value: String(t.Index),
     }));
-    return [{ name: 'Vypnout titulky', value: SUBTITLES_OFF }, ...choices];
+    return [{ name: t('cinema.subtitlesOff'), value: SUBTITLES_OFF }, ...choices];
   }
 
   async function autocomplete(interaction) {
@@ -166,22 +167,22 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     // A live stream cannot be moved.
     const live = player.item?.web?.live;
     const rows = [new ActionRowBuilder().addComponents(
-      ...(live ? [] : [button('back60', '−1 min')]),
-      button('toggle', player.paused ? '▶ Pokračovat' : '⏸ Pauza', ButtonStyle.Primary),
-      ...(live ? [] : [button('fwd60', '+1 min'), button('fwd600', '+10 min')]),
-      button('stop', '⏹ Stop', ButtonStyle.Danger),
+      ...(live ? [] : [button('back60', t('controls.back60'))]),
+      button('toggle', player.paused ? t('controls.resume') : t('controls.pause'), ButtonStyle.Primary),
+      ...(live ? [] : [button('fwd60', t('controls.fwd60')), button('fwd600', t('controls.fwd600'))]),
+      button('stop', t('controls.stop'), ButtonStyle.Danger),
     )];
     const extra = [];
-    if (nowPlaying?.resumedFrom) extra.push(button('restart', '⏮ Pustit od začátku'));
+    if (nowPlaying?.resumedFrom) extra.push(button('restart', t('controls.restart')));
     if (player.segments?.intro) {
       extra.push(player.autoSkipIntro
-        ? button('keepintro', '⏭ Úvody se přeskakují · vypnout')
-        : button('skipintro', '⏭ Přeskočit úvod', ButtonStyle.Success));
+        ? button('keepintro', t('controls.keepintro'))
+        : button('skipintro', t('controls.skipintro'), ButtonStyle.Success));
     }
     if (nowPlaying?.next) {
       extra.push(nowPlaying.skipNext
-        ? button('next', '▶ Pak pustit další díl')
-        : button('nonext', '✖ Nepouštět další díl'));
+        ? button('next', t('controls.next'))
+        : button('nonext', t('controls.nonext')));
     }
     if (extra.length) rows.push(new ActionRowBuilder().addComponents(...extra));
     return rows;
@@ -194,23 +195,23 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
       .setColor(player.paused ? 0xf0b232 : 0x5865f2)
       .setTitle(itemLabel(item))
       .addFields(
-        { name: 'Stav', value: player.paused ? '⏸ Pozastaveno' : '▶ Hraje', inline: true },
-        { name: 'Čas', value: item.web?.live ? '🔴 živě' : `${formatTime(player.position())} / ${formatTime(player.duration)}`, inline: true },
+        { name: t('np.status'), value: player.paused ? t('np.paused') : t('np.playing'), inline: true },
+        { name: t('np.time'), value: item.web?.live ? t('np.live') : `${formatTime(player.position())} / ${formatTime(player.duration)}`, inline: true },
         {
-          name: 'Zvuk',
-          value: (player.audioTrack ? trackLabel(player.audioTrack) : item.web ? 'z videa' : '—') + (player.sound === 'night' ? ' · 🌙 vyrovnaný' : ''),
+          name: t('np.audio'),
+          value: (player.audioTrack ? trackLabel(player.audioTrack) : item.web ? t('np.audioFromVideo') : '—') + (player.sound === 'night' ? t('np.nightTag') : ''),
           inline: false,
         },
-        { name: 'Titulky', value: player.subtitleTrack ? trackLabel(player.subtitleTrack) : player.subtitleFailed ? '⚠️ nešly načíst, běží bez nich' : 'vypnuto', inline: false },
-        { name: 'Kvalita', value: qualityLabel(player.quality), inline: false },
+        { name: t('np.subtitles'), value: player.subtitleTrack ? trackLabel(player.subtitleTrack) : player.subtitleFailed ? t('np.subtitlesFailed') : t('np.subtitlesNone'), inline: false },
+        { name: t('np.quality'), value: qualityLabel(player.quality), inline: false },
       );
     if (item.Overview) embed.setDescription(item.Overview.length > 300 ? `${item.Overview.slice(0, 299)}…` : item.Overview);
     const thumbnail = item.web?.thumbnail ?? poster;
     if (thumbnail) embed.setThumbnail(thumbnail);
     if (nowPlaying?.next) {
-      embed.addFields({ name: 'Potom', value: nowPlaying.skipNext ? 'nic, další díl se nepustí' : itemLabel(nowPlaying.next), inline: false });
+      embed.addFields({ name: t('np.then'), value: nowPlaying.skipNext ? t('np.thenNothing') : itemLabel(nowPlaying.next), inline: false });
     }
-    if (nowPlaying?.requestedBy) embed.setFooter({ text: `Spustil(a): ${nowPlaying.requestedBy}` });
+    if (nowPlaying?.requestedBy) embed.setFooter({ text: t('np.requestedBy', { name: nowPlaying.requestedBy }) });
     return embed;
   }
 
@@ -222,12 +223,12 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
    * For a message of something not finished: a button that goes on from where it stopped.
    * The ID carries it all ("fr:<position>:<audio>:<subtitle>:<item>"), so it works after
    * restarts; an ID holds 100 characters, which a long web address may not fit.
-   * audio DEFAULT_TRACKS: not known, the usual choice (Czech first) is made when clicked.
+   * audio DEFAULT_TRACKS: not known, the usual choice (preferred language first) is made when clicked.
    */
   function resumeRow(itemId, position, audio, subtitle, live = false) {
     const id = `fr:${Math.floor(position)}:${audio ?? ''}:${subtitle ?? ''}:${itemId}`;
     if (id.length > 100) return [];
-    const label = live ? '▶ Naladit znovu' : position < RESUME_MIN_SECONDS ? '▶ Pustit znovu' : `▶ Pokračovat od ${formatTime(position)}`;
+    const label = live ? t('resume.live') : position < RESUME_MIN_SECONDS ? t('resume.again') : t('resume.from', { time: formatTime(position) });
     return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(ButtonStyle.Primary))];
   }
 
@@ -277,7 +278,7 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const [, position, audio, subtitle, ...rest] = interaction.customId.split(':');
     const id = rest.join(':');
     if (busyElsewhere()) throw new UserError(BUSY);
-    if (playing() && player.item.Id === id) throw new UserError('Tohle už běží.');
+    if (playing() && player.item.Id === id) throw new UserError(t('cinema.alreadyRunning'));
     await interaction.deferReply();
     const seconds = Number(position);
     const index = value => (value === '' ? null : Number(value));
@@ -381,8 +382,7 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
   async function recoverPlayback(item, message, position, current = nowPlaying, tracks = null) {
     const now = Date.now();
     const attempts = (recoveries.get(item.Id) ?? []).filter(at => now - at < RECOVERY_WINDOW_MS);
-    const giveUp = () => retireMessage(current, item,
-      `⚠️ Přehrávání spadlo v čase ${formatTime(position)}: ${message}\nZkus znovu \`/pust\`, naváže od místa, kde to spadlo.`);
+    const giveUp = () => retireMessage(current, item, t('cinema.crashed', { time: formatTime(position), message }));
     if (attempts.length >= RECOVERY_ATTEMPTS || !peopleInVoice()) return giveUp();
     recoveries.set(item.Id, [...attempts, now]);
     tracks ??= { audioIndex: lastTracks?.audio?.Index ?? null, subtitleIndex: lastTracks?.subtitle?.Index ?? null };
@@ -408,15 +408,15 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
       recovery = null;
       await beginPlayback(fresh, { startSeconds: Math.max(0, position - 5), tracks, byId: current?.requestedById, skipNext: current?.skipNext },
         current?.requestedBy ?? 'FilmVault', payload => textChannel().send(payload),
-        `⚠️ Vysílání spadlo, navázáno od ${formatTime(Math.max(0, position - 5))}.`);
+        t('cinema.recovered', { time: formatTime(Math.max(0, position - 5)) }));
       // /stop came while it was getting ready: it does not come back after a restart either.
-      if (current && nowPlaying === current) return retireNowPlaying(item, '⏹ Zastaveno.');
+      if (current && nowPlaying === current) return retireNowPlaying(item, t('cinema.stopped'));
       if (current?.message) await current.message.delete().catch(() => {});
     } catch (error) {
       console.error('Recovery failed:', error.message);
       if (recovery === token) recovery = null;
       // The streamer finished: nothing to go back to.
-      if (item.web?.live && LIVE_ENDED.test(error.message)) return retireMessage(current, item, '🔴 Přenos skončil.');
+      if (item.web?.live && LIVE_ENDED.test(error.message)) return retireMessage(current, item, t('cinema.liveEnded'));
       // A half-started attempt (e.g. its message failed to send) is undone first.
       if (playing() && player.item.Id === item.Id) await player.stop().catch(() => {});
       nowPlaying = current;
@@ -454,12 +454,12 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
   }
 
   function requireActive() {
-    if (!playing()) throw new UserError(busyElsewhere() ? BUSY : 'Teď nic nehraje. Pusť něco přes /pust.');
+    if (!playing()) throw new UserError(busyElsewhere() ? BUSY : t('cinema.nothingPlaying'));
   }
 
   function requireSeekable() {
     requireActive();
-    if (player.item.web?.live) throw new UserError('Živý přenos posouvat nejde.');
+    if (player.item.web?.live) throw new UserError(t('cinema.liveNoSeek'));
   }
 
   function userName(interaction) {
@@ -469,7 +469,7 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
   async function handlePlay(interaction) {
     const od = interaction.options.getString('od');
     const start = od ? parseTime(od) : null;
-    if (od && (!start || start.relative)) throw new UserError('Čas začátku zadej třeba jako 1:20:00 nebo 45 (minut).');
+    if (od && (!start || start.relative)) throw new UserError(t('cinema.badStartTime'));
     if (busyElsewhere()) throw new UserError(BUSY);
     await interaction.deferReply();
     const item = await resolveItem(interaction.options.getString('film', true));
@@ -503,14 +503,14 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
 
   /**
    * startSeconds null = resume where it was left off. Tracks not chosen explicitly
-   * default to Czech audio, else Czech subtitles (see defaultTracks). byId: Discord ID
+   * default to preferred-language audio, else subtitles (see defaultTracks). byId: Discord ID
    * of requestedBy; note: extra line for the message.
    */
   async function beginPlayback(item, options, requestedBy, send, note) {
     // Checked and held in one step, so two servers cannot start at the same moment.
     if (busyElsewhere()) throw new UserError(BUSY);
     if (player.streamer.client.guilds.cache.size && !player.streamer.client.guilds.cache.has(guildId)) {
-      throw new UserError('Streamovací účet na tomhle serveru není, správce ho musí pozvat.');
+      throw new UserError(t('cinema.noStreamer'));
     }
     starting++;
     try {
@@ -549,28 +549,28 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
       });
     } catch (error) {
       // The previous film was stopped for this one (joining the call failed): its buttons go.
-      if (previous && !playing()) await retireNowPlaying(previous, '⏹ Zastaveno, nové přehrávání se nepodařilo spustit.');
+      if (previous && !playing()) await retireNowPlaying(previous, t('cinema.startFailedStopped'));
       throw error;
     }
     // /stop, /odejdi or a newer /pust came while this one was getting ready.
     if (!started) {
-      await send({ content: '⏹ Tohle puštění bylo zrušeno.', embeds: [], components: [] }).catch(() => {});
+      await send({ content: t('cinema.startCancelled'), embeds: [], components: [] }).catch(() => {});
       return;
     }
-    if (previous) await retireNowPlaying(previous, 'Přepnuto na jiný film.');
+    if (previous) await retireNowPlaying(previous, t('cinema.switched'));
 
     loadSegments(item, next);
     const poster = item.web ? null : await downloadPoster(item);
     if (player.item !== item) {
-      await send({ content: '⏹ Zastaveno dřív, než se to stihlo rozběhnout.', embeds: [], components: [] }).catch(() => {});
+      await send({ content: t('cinema.stoppedTooSoon'), embeds: [], components: [] }).catch(() => {});
       return;
     }
     nowPlaying = { message: null, itemId: item.Id, requestedBy, requestedById: byId, resumedFrom, poster, next, skipNext };
-    const resumeNote = resumedFrom ? ` Navazuje od ${formatTime(resumedFrom)}, kde jste skončili.` : '';
+    const resumeNote = resumedFrom ? t('np.resumeNote', { time: formatTime(resumedFrom) }) : '';
     const current = nowPlaying;
     try {
       current.message = await send({
-        content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}${note ? `\n${note}` : ''}`,
+        content: `${t('np.started', { channel: voiceChannelId })}${resumeNote}${note ? `\n${note}` : ''}`,
         embeds: [nowPlayingEmbed({ poster: poster && `attachment://${POSTER_FILE}` })],
         components: controls(),
         files: poster ? [new AttachmentBuilder(poster, { name: POSTER_FILE })] : [],
@@ -592,9 +592,9 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const base = defaultTracks(source, sameAudio?.Index ?? null);
     if (!previous) return base;
     if (!previous.subtitle) {
-      // Subtitles were off: stay off, except Czech forced ones under Czech audio.
+      // Subtitles were off: stay off, except forced ones in the preferred language under its audio.
       const audio = audioTracks(source).find(t => t.Index === base.audioIndex);
-      return { ...base, subtitleIndex: audio && isCzech(audio) ? base.subtitleIndex : null };
+      return { ...base, subtitleIndex: audio && isPreferred(audio) ? base.subtitleIndex : null };
     }
     const sameSubtitle = subtitleTracks(source).find(t =>
       t.Language === previous.subtitle.Language && !!t.IsForced === !!previous.subtitle.IsForced
@@ -630,9 +630,9 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const next = current?.skipNext ? null : current?.next;
     if (!next || !peopleInVoice()) {
       await player.closeLive();
-      return retireNowPlaying(item, next ? '🎬 Dohráno. Nikdo není v hovoru, další díl se nepustil.' : '🎬 Dohráno.');
+      return retireNowPlaying(item, next ? t('cinema.finishedNobody') : t('cinema.finished'));
     }
-    await retireNowPlaying(item, `🎬 Dohráno. ▶ Pokračuje **${itemLabel(next)}**.`);
+    await retireNowPlaying(item, t('cinema.finishedNext', { title: itemLabel(next) }));
     const channel = textChannel();
     try {
       const fresh = await getItem(next.Id);
@@ -640,7 +640,7 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
         current.requestedBy, payload => channel.send(payload));
     } catch (error) {
       await player.closeLive();
-      await channel?.send(`Další díl se nepodařilo pustit: ${error.message}`).catch(() => {});
+      await channel?.send(t('cinema.nextFailed', { error: error.message })).catch(() => {});
       throw error;
     }
   }
@@ -702,8 +702,8 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
         if (removed) await wishlist?.restoreWish(removed);
         wishlist?.refresh();
         const notice = removed
-          ? `🗑 Odebráno z historie: **${removed.label}** (${formatDate(removed.endedAt)})`
-          : 'Tenhle záznam už v historii není.';
+          ? t('cinema.historyRemoved', { label: removed.label, date: formatDate(removed.endedAt) })
+          : t('cinema.historyGone');
         return interaction.editReply(await historyList(Number(rest[0]), notice));
       }
       if (action === 'play') {
@@ -734,44 +734,44 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
   async function handleSeek(interaction) {
     requireSeekable();
     const parsed = parseTime(interaction.options.getString('cas', true));
-    if (!parsed) throw new UserError('Nerozumím času. Zkus 1:20:00, +5, -2 nebo +30s.');
+    if (!parsed) throw new UserError(t('cinema.badSeekTime'));
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const target = parsed.relative ? player.position() + parsed.seconds : parsed.seconds;
     await player.seek(target);
     await refreshNowPlaying();
-    await interaction.editReply(`⏩ Posunuto na ${formatTime(player.position())}.`);
+    await interaction.editReply(t('cinema.seeked', { time: formatTime(player.position()) }));
   }
 
   /** Everyone watches the same stream, so a change is announced in the channel. */
   async function handleQuality(interaction) {
     const wanted = interaction.options.getString('uroven');
     if (!wanted) {
-      return interaction.reply({ content: `📺 Kvalita: ${qualityLabel(quality)}`, flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: t('cinema.qualityNow', { quality: qualityLabel(quality) }), flags: MessageFlags.Ephemeral });
     }
     if (wanted === quality) {
-      return interaction.reply({ content: `📺 Kvalita už je ${qualityLabel(wanted)}.`, flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: t('cinema.qualityAlready', { quality: qualityLabel(wanted) }), flags: MessageFlags.Ephemeral });
     }
     await interaction.deferReply();
     quality = wanted;
     if (playing()) await player.setQuality(wanted);
     await saveQuality(wanted).catch(error => console.error('Could not save quality setting:', error.message));
     await refreshNowPlaying();
-    const note = playing() && !player.paused ? ' Obraz se na chvilku zastaví a naváže.' : '';
-    await interaction.editReply(`📺 Kvalita: **${qualityLabel(wanted)}** (${userName(interaction)}).${note}`);
+    const note = playing() && !player.paused ? t('cinema.restartNote') : '';
+    await interaction.editReply(t('cinema.qualityChanged', { quality: qualityLabel(wanted), name: userName(interaction), note }));
   }
 
   async function handleSound(interaction) {
     const wanted = interaction.options.getString('rezim');
     if (!wanted || wanted === sound) {
-      return interaction.reply({ content: `🔊 Režim zvuku: ${SOUND_MODES[sound]}`, flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: t('cinema.soundNow', { mode: SOUND_MODES[sound] }), flags: MessageFlags.Ephemeral });
     }
     await interaction.deferReply();
     sound = wanted;
     if (playing()) await player.setSound(wanted);
     await updateSettings({ sound: wanted });
     await refreshNowPlaying();
-    const note = playing() && !player.paused ? ' Obraz se na chvilku zastaví a naváže.' : '';
-    await interaction.editReply(`🔊 Režim zvuku: **${SOUND_MODES[wanted]}** (${userName(interaction)}).${note}`);
+    const note = playing() && !player.paused ? t('cinema.restartNote') : '';
+    await interaction.editReply(t('cinema.soundChanged', { mode: SOUND_MODES[wanted], name: userName(interaction), note }));
   }
 
   async function statsFor(period, now = Date.now()) {
@@ -804,14 +804,14 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
   async function postMonthlySummary() {
     const now = Date.now();
     const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
+      timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
     }).formatToParts(new Date(now)).map(p => [p.type, p.value]));
     const month = `${parts.year}-${parts.month}`;
     const settings = await loadSettings();
     if (settings.summaryMonth === month || (Number(parts.day) === 1 && Number(parts.hour) < SUMMARY_HOUR)) return;
     const stats = await statsFor('minuly', now);
     // Marked done only once sent (or with nothing to send), so a failure retries next hour.
-    if (stats.titles) await textChannel().send({ content: '📅 **Jak jsme koukali minulý měsíc**', embeds: [serverEmbed(stats, 'minulý měsíc')] });
+    if (stats.titles) await textChannel().send({ content: t('cinema.monthlySummary'), embeds: [serverEmbed(stats, PERIODS.minuly.label)] });
     await updateSettings({ summaryMonth: month });
   }
 
@@ -832,26 +832,31 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const jellyfin = await fetch(`${config.jellyfinUrl}/System/Info/Public`, {
       headers: { Authorization: authHeader }, signal: AbortSignal.timeout(5000),
     }).then(res => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))).then(
-      info => `✅ ${info.Version}, odpověď za ${Date.now() - jellyfinStart} ms`,
+      info => t('status.jellyfinOk', { version: info.Version, ms: Date.now() - jellyfinStart }),
       error => `❌ ${error.message}`,
     );
     const report = player.liveConn?.lastReport;
-    const stream = !playing() ? (busyElsewhere() ? 'promítá se na jiném serveru' : 'nic nehraje')
+    const stream = !playing() ? (busyElsewhere() ? t('status.elsewhere') : t('status.idle'))
       : `${player.paused ? '⏸' : '▶'} ${itemLabel(player.item)} · ${formatTime(player.position())}`
-        + (report ? `\nza poslední minutu: ${report.frames} snímků, ${report.gaps} zaseknutí, Discord chtěl znovu ${report.nacked} paketů`
-          + (report.remb ? `, odhad linky ${Math.round(report.remb / 1000)} kbit/s` : '') : '');
+        + (report ? t('status.report', { frames: report.frames, gaps: report.gaps, nacked: report.nacked })
+          + (report.remb ? t('status.bandwidth', { kbit: Math.round(report.remb / 1000) }) : '') : '');
     const memory = process.memoryUsage().rss / 2 ** 20;
-    const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('🩺 Stav kina').addFields(
-      { name: 'Vysílání', value: stream, inline: false },
+    const embed = new EmbedBuilder().setColor(0x5865f2).setTitle(t('status.title')).addFields(
+      { name: t('status.broadcast'), value: stream, inline: false },
       { name: 'Jellyfin', value: jellyfin, inline: true },
-      { name: 'Discord', value: client.ws.ping >= 0 ? `odezva ${client.ws.ping} ms` : 'odezva se ještě měří', inline: true },
+      { name: 'Discord', value: client.ws.ping >= 0 ? t('status.ping', { ms: client.ws.ping }) : t('status.pingPending'), inline: true },
       {
         name: 'MiniPC',
-        value: `CPU ${await cpuUsage()} % · volná paměť ${(os.freemem() / 2 ** 30).toFixed(1)} / ${(os.totalmem() / 2 ** 30).toFixed(1)} GB`
-          + `\nbot: ${Math.round(memory)} MB, běží ${formatTime((Date.now() - startedAt) / 1000)}`,
+        value: t('status.machine', {
+          cpu: await cpuUsage(),
+          free: (os.freemem() / 2 ** 30).toFixed(1),
+          total: (os.totalmem() / 2 ** 30).toFixed(1),
+          memory: Math.round(memory),
+          uptime: formatTime((Date.now() - startedAt) / 1000),
+        }),
         inline: false,
       },
-      { name: 'Nastavení', value: `📺 ${qualityLabel(quality)}\n🔊 ${SOUND_MODES[sound]}`, inline: false },
+      { name: t('status.settings'), value: `📺 ${qualityLabel(quality)}\n🔊 ${SOUND_MODES[sound]}`, inline: false },
     );
     return interaction.editReply({ embeds: [embed] });
   }
@@ -862,24 +867,24 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (kind === 'audio') {
       const index = Number(value);
-      if (!audioTracks(player.source).some(t => t.Index === index)) throw new UserError('Takovou zvukovou stopu film nemá.');
+      if (!audioTracks(player.source).some(t => t.Index === index)) throw new UserError(t('cinema.noSuchAudio'));
       await player.setTracks({ audioIndex: index });
-      await interaction.editReply(`🔊 Zvuk: ${trackLabel(player.audioTrack)}`);
+      await interaction.editReply(t('cinema.audioSet', { track: trackLabel(player.audioTrack) }));
     } else {
       const index = value === SUBTITLES_OFF ? null : Number(value);
       await player.setTracks({ subtitleIndex: index });
-      await interaction.editReply(player.subtitleTrack ? `💬 Titulky: ${trackLabel(player.subtitleTrack)}` : '💬 Titulky vypnuty.');
+      await interaction.editReply(player.subtitleTrack ? t('cinema.subtitlesSet', { track: trackLabel(player.subtitleTrack) }) : t('cinema.subtitlesSetOff'));
     }
     await refreshNowPlaying();
   }
 
   async function handleAddWatch(interaction) {
     const endedAt = parseWhen(interaction.options.getString('kdy'));
-    if (endedAt === null) throw new UserError('Nerozumím datu. Zkus včera, 28.10., 28.10.2026 nebo 28.10. 21:30.');
-    if (endedAt > Date.now() + 60_000) throw new UserError('To je v budoucnu. Zapsat jde jen to, co už jste viděli.');
+    if (endedAt === null) throw new UserError(t('cinema.badDate'));
+    if (endedAt > Date.now() + 60_000) throw new UserError(t('cinema.futureDate'));
     const stopped = interaction.options.getString('skoncili');
     const parsed = stopped ? parseTime(stopped) : null;
-    if (stopped && (!parsed || parsed.relative)) throw new UserError('Kde jste skončili, zadej jako 1:20:00 nebo 45 (minut).');
+    if (stopped && (!parsed || parsed.relative)) throw new UserError(t('cinema.badStopTime'));
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const item = await resolveItem(interaction.options.getString('film', true));
     const duration = durationSeconds(item);
@@ -889,8 +894,8 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     // Jellyfin shows it as seen (or where to go on) too.
     if (savesToJellyfin(item)) await saveProgress(item.Id, { seconds: position, played: finished }).catch(error => console.error('Saving progress failed:', error.message));
     wishlist?.refresh();
-    const state = finished ? 'jako dokoukané' : `se skončením v ${formatTime(position)}`;
-    return interaction.editReply(`✍️ Zapsáno do historie: **${itemLabel(item)}**, ${formatDate(endedAt)}, ${state}. Odebrat jde v /videli.`);
+    const state = finished ? t('cinema.watchLoggedDone') : t('cinema.watchLoggedAt', { time: formatTime(position) });
+    return interaction.editReply(t('cinema.watchLogged', { label: itemLabel(item), date: formatDate(endedAt), state }));
   }
 
   async function handleCommand(interaction) {
@@ -905,14 +910,14 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
         requireActive();
         await player.pause();
         await refreshNowPlaying();
-        return interaction.editReply(`⏸ Pozastaveno na ${formatTime(player.position())}.`);
+        return interaction.editReply(t('cinema.paused', { time: formatTime(player.position()) }));
       case 'pokracuj':
         requireActive();
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         requireActive();
         await player.resume();
         await refreshNowPlaying();
-        return interaction.editReply('▶ Pokračuje se.');
+        return interaction.editReply(t('cinema.resumed'));
       case 'posun':
         return handleSeek(interaction);
       case 'kvalita':
@@ -944,35 +949,35 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
         requireActive();
         return interaction.reply({ embeds: [nowPlayingEmbed()], flags: MessageFlags.Ephemeral });
       case 'stop': {
-        if (!playing() && cancelRecovery(`⏹ Zastaveno (${userName(interaction)}).`)) {
-          return interaction.reply({ content: '⏹ Zastaveno, kino už se znovu nepustí.', flags: MessageFlags.Ephemeral });
+        if (!playing() && cancelRecovery(t('cinema.stoppedBy', { name: userName(interaction) }))) {
+          return interaction.reply({ content: t('cinema.stopNoRestart'), flags: MessageFlags.Ephemeral });
         }
         if (!playing() && starting > 0) {
           // A full stop: between two episodes the stream stays open waiting for this start.
           await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           await player.stop().catch(() => {});
-          return interaction.editReply('⏹ Puštění zrušeno.');
+          return interaction.editReply(t('cinema.startCancelledShort'));
         }
         requireActive();
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const item = player.item;
         await player.stop();
-        await retireNowPlaying(item, `⏹ Zastaveno (${userName(interaction)}).`);
-        return interaction.editReply('⏹ Zastaveno.');
+        await retireNowPlaying(item, t('cinema.stoppedBy', { name: userName(interaction) }));
+        return interaction.editReply(t('cinema.stopped'));
       }
       case 'odejdi': {
         // Must not end what plays on the other server, or the call it waits in there.
         if (busyElsewhere()) throw new UserError(BUSY);
-        if (player.channelId && player.guildId !== guildId) throw new UserError('Kino teď v tomhle hovoru není.');
+        if (player.channelId && player.guildId !== guildId) throw new UserError(t('cinema.notInCall'));
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         // Another server may have started during the answer above.
         if (busyElsewhere()) throw new UserError(BUSY);
         player.guildId = guildId;
         const item = player.item;
-        cancelRecovery('⏹ Zastaveno, odpojeno z hovoru.');
+        cancelRecovery(t('cinema.stoppedLeft'));
         await player.leave();
-        if (item) await retireNowPlaying(item, '⏹ Zastaveno, odpojeno z hovoru.');
-        return interaction.editReply('👋 Odpojeno.');
+        if (item) await retireNowPlaying(item, t('cinema.stoppedLeft'));
+        return interaction.editReply(t('cinema.left'));
       }
     }
   }
@@ -981,11 +986,11 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const action = interaction.customId.slice(3);
     // Stop on a stream that fell and waits to be started again.
     if (action === 'stop' && recovery?.current?.message?.id === interaction.message.id && !playing()) {
-      cancelRecovery(`⏹ Zastaveno (${userName(interaction)}).`);
+      cancelRecovery(t('cinema.stoppedBy', { name: userName(interaction) }));
       return interaction.deferUpdate();
     }
     if (!playing() || nowPlaying?.message?.id !== interaction.message.id) {
-      return interaction.reply({ content: 'Tohle přehrávání už skončilo.', flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: t('cinema.playbackOver'), flags: MessageFlags.Ephemeral });
     }
     await interaction.deferUpdate();
     // The item may have ended while the click was on its way.
@@ -993,7 +998,7 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     if (action === 'stop') {
       const item = player.item;
       await player.stop();
-      return retireNowPlaying(item, `⏹ Zastaveno (${interaction.member?.displayName ?? interaction.user.username}).`);
+      return retireNowPlaying(item, t('cinema.stoppedBy', { name: interaction.member?.displayName ?? interaction.user.username }));
     }
     if (action === 'restart') {
       requireSeekable();
@@ -1022,7 +1027,7 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
   }
 
   async function replyError(interaction, error) {
-    const text = error instanceof UserError ? error.message : `Něco se pokazilo: ${error.message}`;
+    const text = error instanceof UserError ? error.message : t('cinema.wentWrong', { error: error.message });
     if (error instanceof UserError) console.log(`Refused in ${guild.name}: ${text}`);
     else console.error(error);
     try {
@@ -1050,9 +1055,9 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
       // The account may have moved to another server meanwhile.
       if (player.guildId !== guildId) return;
       const item = player.item;
-      cancelRecovery('👋 Všichni odešli, přehrávání zastaveno.');
+      cancelRecovery(t('cinema.everyoneLeft'));
       await player.leave().catch(error => console.error('Leave failed:', error));
-      if (item) await retireNowPlaying(item, '👋 Všichni odešli, přehrávání zastaveno.');
+      if (item) await retireNowPlaying(item, t('cinema.everyoneLeft'));
     }, ALONE_LEAVE_MS);
   }
 
@@ -1112,11 +1117,11 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     // Reading the help takes no role, and the answer is only for whoever clicked.
     if (interaction.isButton() && interaction.customId.startsWith('help:')) {
       const embed = helpTopic(interaction.customId, helpWishlistId);
-      const answer = embed ? { embeds: [embed] } : { content: 'Tahle část návodu už není.' };
+      const answer = embed ? { embeds: [embed] } : { content: t('cinema.helpGone') };
       return interaction.reply({ ...answer, flags: MessageFlags.Ephemeral }).catch(error => console.warn('Help answer failed:', error.message));
     }
     if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) && interaction.customId.startsWith('fw:')) {
-      if (!wishlist) return interaction.reply({ content: 'Seznam filmů teď nefunguje.', flags: MessageFlags.Ephemeral });
+      if (!wishlist) return interaction.reply({ content: t('cinema.wishlistDown'), flags: MessageFlags.Ephemeral });
       return wishlist.handleInteraction(interaction).catch(error => replyError(interaction, error));
     }
     const isList = (interaction.isButton() || interaction.isStringSelectMenu()) && /^f[lsh]:/.test(interaction.customId);
@@ -1124,11 +1129,11 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     if (!interaction.isChatInputCommand() && !isList && !isResume && !(interaction.isButton() && interaction.customId.startsWith('fv:'))) return;
     if (interaction.channelId !== textChannelId) {
       console.log(`Refused in ${guild.name}: used outside the cinema's text channel`);
-      return interaction.reply({ content: `Kino se ovládá jen v <#${textChannelId}>.`, flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: t('cinema.wrongChannel', { channel: textChannelId }), flags: MessageFlags.Ephemeral });
     }
     if (!allowed(interaction)) {
       console.log(`Refused in ${guild.name}: ${userName(interaction)} lacks the cinema's role`);
-      return interaction.reply({ content: 'Na ovládání kina nemáš oprávnění.', flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: t('cinema.noPermission'), flags: MessageFlags.Ephemeral });
     }
     const received = Date.now();
     // Each Discord call as "<ms after arrival>+<ms it took>", to tell our work from Discord's.
@@ -1222,18 +1227,18 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
     await deleteDeadMessages(state?.messageId);
     const fresh = saved?.fresh ? state : null;
     // Too old to go on by itself: what played still counts, and its message offers to go on later.
-    if (state && !fresh) await closeInterrupted(state, '⏹ Přerušeno, kino bylo dlouho vypnuté.');
+    if (state && !fresh) await closeInterrupted(state, t('cinema.interruptedLong'));
     const itemId = fresh?.itemId ?? request?.itemId;
     const notResuming = reason => (fresh ? closeInterrupted(fresh, reason) : undefined);
     if (!itemId) return undefined;
     // Another server went on with its film (the deploy script's autoplay is for the first server).
     if (busyElsewhere()) {
       console.log('Not resuming after restart: the cinema plays on another server');
-      return notResuming('⏹ Přerušeno restartem kina.');
+      return notResuming(t('cinema.interruptedRestart'));
     }
     if (!peopleInVoice()) {
       console.log('Not resuming after restart: nobody in the voice room');
-      return notResuming('⏹ Přerušeno restartem kina, v hovoru nikdo nebyl.');
+      return notResuming(t('cinema.interruptedNobody'));
     }
     try {
       const item = await loadItem(itemId);
@@ -1243,14 +1248,14 @@ export function createCinema({ client, player, guild, setup, busyElsewhere }) {
         const startSeconds = Math.max(0, state.position - 5);
         await beginPlayback(item, {
           startSeconds, tracks: { audioIndex: state.audioIndex, subtitleIndex: state.subtitleIndex }, byId: state.byId, skipNext: state.skipNext,
-        }, state.by ?? 'FilmVault', send, `🔄 Kino se restartovalo, navázáno od ${formatTime(startSeconds)}.`);
+        }, state.by ?? 'FilmVault', send, t('cinema.restarted', { time: formatTime(startSeconds) }));
         await textChannel().messages.delete(state.messageId).catch(() => {});
       } else {
         await beginPlayback(item, {}, request.by ?? 'restart', send);
       }
     } catch (error) {
       console.error('Autoplay after restart failed:', error);
-      return notResuming('⏹ Přerušeno restartem kina, nepodařilo se navázat.');
+      return notResuming(t('cinema.interruptedFailed'));
     }
     return undefined;
   }

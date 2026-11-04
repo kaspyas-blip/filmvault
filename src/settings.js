@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 import { jsonFile } from './store.js';
 
 /**
@@ -27,6 +28,6 @@ export function createSettings(dir) {
 }
 
 export const SOUND_MODES = {
-  normal: 'Normální',
-  night: 'Vyrovnaný (noční): hlasitější dialogy, tišší výbuchy',
+  normal: t('sound.normal'),
+  night: t('sound.night'),
 };

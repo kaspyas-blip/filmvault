@@ -6,6 +6,7 @@ import { Client } from '@lng2004/discord.js-selfbot-v13';
 import { BaseMediaConnection, GatewayOpCodes, Streamer, playStream } from '@dank074/discord-video-stream';
 import { config } from './config.js';
 import { buildFfmpegArgs, hdrTransfer } from './ffmpeg.js';
+import { t } from './i18n.js';
 import { DEFAULT_QUALITY, QUALITIES } from './quality.js';
 import { raiseTimerResolution } from './timer.js';
 import {
@@ -283,7 +284,7 @@ function subtitleFile(item, source, stream) {
     subtitleFiles.delete(key);
     return subtitleFile(item, source, stream);
   }, () => {
-    throw new UserError('Tyhle titulky se z Jellyfinu nepodařilo načíst, zkus jiné.');
+    throw new UserError(t('player.subtitlesFailed'));
   });
 }
 
@@ -359,7 +360,7 @@ export class Player extends EventEmitter {
       this.reset();
       this.leaveVoice();
       this.channelId = null;
-      if (item) this.emit('failed', item, 'kino bylo odpojeno z hovoru', position);
+      if (item) this.emit('failed', item, t('player.disconnected'), position);
     }).catch(error => console.error('Handling the disconnect failed:', error));
   }
 
@@ -670,9 +671,7 @@ export class Player extends EventEmitter {
         const s = retryError.status ?? {};
         console.error(`Joining the call failed again (session ${!!s.hasSession}, voice server ${!!s.hasToken}, connecting ${!!s.started})`);
         const incident = await discordIncident();
-        throw new UserError(incident
-          ? `Nepodařilo se připojit do hovoru. Discord teď hlásí problém: „${incident}“ (discordstatus.com). Zkus to, až ho vyřeší.`
-          : 'Nepodařilo se připojit do hovoru (vypršel čas). Zkus to za chvíli znovu, případně /odejdi.');
+        throw new UserError(incident ? t('player.joinIncident', { incident }) : t('player.joinTimeout'));
       }
     }
     this.channelId = channelId;
@@ -686,9 +685,9 @@ export class Player extends EventEmitter {
   async prepareSubtitle(item, source, subtitleIndex) {
     if (subtitleIndex === null) return null;
     const stream = subtitleTracks(source).find(t => t.Index === subtitleIndex);
-    if (!stream) throw new UserError('Tyhle titulky ve filmu nejsou.');
+    if (!stream) throw new UserError(t('player.noSuchSubtitles'));
     if (stream.IsTextSubtitleStream) return { kind: 'text', file: await subtitleFile(item, source, stream) };
-    if (stream.IsExternal) throw new UserError('Externí obrázkové titulky zatím neumím.');
+    if (stream.IsExternal) throw new UserError(t('player.imageSubtitles'));
     return { kind: 'image', index: stream.Index };
   }
 
@@ -702,7 +701,7 @@ export class Player extends EventEmitter {
     if (!this.countdown || !endAt || position < endAt - COUNTDOWN_SECONDS) return '';
     const left = endAt - Math.floor(session.startSeconds);
     const label = this.countdown.replace(/[%\\]/g, '');
-    return `Další díl za %{eif:max(1,ceil(${left.toFixed(2)}-t)):d} s\n${label}`;
+    return `${t('player.nextEpisodeIn', { countdown: `%{eif:max(1,ceil(${left.toFixed(2)}-t)):d}` })}\n${label}`;
   }
 
   /** Replaces the overlay file in one step, so ffmpeg never reads half of it. */
@@ -741,7 +740,7 @@ export class Player extends EventEmitter {
         if (this.session !== session) return;
         if (this.stallRestarts > STALL_RESTARTS) {
           this.reset();
-          this.emit('failed', item, 'vysílání se opakovaně zaseklo', position);
+          this.emit('failed', item, t('player.stalled'), position);
           return;
         }
         this.endSession({ keepLive: true });
@@ -871,7 +870,7 @@ export class Player extends EventEmitter {
         if (this.session !== session) return;
         const position = this.position();
         this.reset();
-        const message = cleanExit ? 'zdroj videa se přerušil' : stderr.trim().split('\n').pop() || error?.message || 'neznámá chyba';
+        const message = cleanExit ? t('player.sourceCut') : stderr.trim().split('\n').pop() || error?.message || t('player.unknownError');
         this.emit('failed', item, message, position);
       });
     };
