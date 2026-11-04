@@ -4,7 +4,7 @@
 
 A Discord bot that streams films and series from your [Jellyfin](https://jellyfin.org) server, and YouTube or Kick links, into a voice channel as a Go Live stream. You type `/pust Zohan` in a text channel and a few seconds later the film is playing for everyone in the call. Anyone with permission can pause, seek, switch audio or subtitles, and the bot remembers where each film was left off.
 
-The bot speaks English or Czech (`LANGUAGE`). Commands show English names on English Discord clients and Czech ones on others.
+The bot speaks English or Czech (`LANGUAGE`). Commands are named in that language too, and a Discord client set to English or Czech shows its own names.
 
 > [!WARNING]
 > **Streaming uses a selfbot.** Discord bots cannot start Go Live, so FilmVault drives a normal user account with its token. That **breaks Discord's Terms of Service and can get the account banned.** Use a throwaway account, never your own. You use this at your own risk; there is no support and no warranty (see [LICENSE](LICENSE)). The project is meant for small private servers with friends.
@@ -121,7 +121,7 @@ npm start
 
 On the first start the bot sets up one server from `TEXT_CHANNEL` and `VOICE_CHANNEL` if it can find them. Any other server (or a server where that failed) shows only `/setup` (`/nastavit` in Czech), which a member with the Manage Server permission runs once: pick the text and voice channel and optionally the wishlist room and a role allowed to control the cinema. It applies immediately, no restart. Afterwards the bot posts its help message in the text channel. Join the voice channel, run `/pust` with a title, and click the live stream.
 
-Command names: the table below gives both. An English Discord client shows the English one, any other client the Czech one; they are the same command.
+Command names: the table below gives both. Commands are named in the `LANGUAGE` of the bot, and a Discord client set to English or Czech shows its own names; they are the same command.
 
 ## Commands
 

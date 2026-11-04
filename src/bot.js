@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { createCinema } from './cinema.js';
-import { setupCommand } from './commands.js';
+import { setupCommand, useCodeNames } from './commands.js';
 import { config } from './config.js';
 import { loadGuilds, saveGuilds } from './guilds.js';
 import { t } from './i18n.js';
@@ -148,6 +148,7 @@ export function startBot(player) {
 
   client.on('interactionCreate', async interaction => {
     if (!interaction.guildId) return undefined;
+    if (interaction.isChatInputCommand() || interaction.isAutocomplete()) useCodeNames(interaction);
     if (interaction.isChatInputCommand() && interaction.commandName === 'nastavit') {
       return handleSetup(interaction).catch(error => {
         console.error('Setup failed:', error);

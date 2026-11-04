@@ -1,35 +1,45 @@
 import { ChannelType, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
+import { config } from './config.js';
 import { SORTS } from './jellyfin.js';
 import { t, tIn } from './i18n.js';
 import { QUALITIES, qualityLabel } from './quality.js';
 import { SOUND_MODES } from './settings.js';
 import { PERIODS } from './stats.js';
 
-// The registered command and option names stay the Czech ones, the code reads them. English
-// Discord clients are shown the English names and texts of en.js through the localizations.
-const ENGLISH_LOCALES = ['en-US', 'en-GB'];
+// Commands are registered under the names of the configured language; a Discord client in
+// English or Czech is shown its own. Discord always reports the registered name, and the
+// code reads the Czech ones, which useCodeNames translates back to.
+const LOCALES = { 'en-US': 'en', 'en-GB': 'en', cs: 'cs' };
 
-const english = key => Object.fromEntries(ENGLISH_LOCALES.map(locale => [locale, tIn('en', key)]));
+const localized = text => Object.fromEntries(Object.entries(LOCALES).map(([locale, language]) => [locale, text(language)]));
 
-// Names and descriptions of a command or option; the default description is in the configured language.
+// Registered name -> the code's name, with the same for the options of each command.
+const codeNames = new Map();
+
+// Names and descriptions of a command or option; the default ones are in the configured language.
 function described(builder, key) {
   return builder
-    .setNameLocalizations(english(`${key}.name`))
+    .setName(t(`${key}.name`))
+    .setNameLocalizations(localized(language => tIn(language, `${key}.name`)))
     .setDescription(t(`${key}.description`))
-    .setDescriptionLocalizations(english(`${key}.description`));
+    .setDescriptionLocalizations(localized(language => tIn(language, `${key}.description`)));
 }
 
-// A choice shown in the configured language, and in English to English clients.
-function choice(value, name, englishName) {
-  return {
-    name,
-    name_localizations: Object.fromEntries(ENGLISH_LOCALES.map(locale => [locale, englishName])),
-    value,
-  };
+// A choice shown in the configured language, and in their own to English and Czech clients.
+function choice(value, text) {
+  return { name: text(config.language), name_localizations: localized(text), value };
 }
 
-const command = name => described(new SlashCommandBuilder().setName(name), `cmd.${name}`);
-const option = (builder, name, key) => described(builder.setName(name), key);
+function command(name) {
+  codeNames.set(t(`cmd.${name}.name`), { name, options: new Map() });
+  return described(new SlashCommandBuilder(), `cmd.${name}`);
+}
+
+function option(builder, name, key) {
+  const [, commandName] = key.split('.');
+  codeNames.get(t(`cmd.${commandName}.name`)).options.set(t(`${key}.name`), name);
+  return described(builder, key);
+}
 
 export const commands = [
   command('pust')
@@ -47,21 +57,21 @@ export const commands = [
     .addStringOption(o => option(o, 'stopa', 'cmd.titulky.stopa').setRequired(true).setAutocomplete(true)),
   command('kvalita')
     .addStringOption(o => option(o, 'uroven', 'cmd.kvalita.uroven')
-      .addChoices(...Object.keys(QUALITIES).map(key => choice(key, qualityLabel(key), qualityLabel(key, 'en'))))),
+      .addChoices(...Object.keys(QUALITIES).map(key => choice(key, language => qualityLabel(key, language))))),
   command('hlasitost')
     .addStringOption(o => option(o, 'rezim', 'cmd.hlasitost.rezim')
-      .addChoices(...Object.entries(SOUND_MODES).map(([value, name]) => choice(value, name, tIn('en', `sound.${value}`))))),
+      .addChoices(...Object.keys(SOUND_MODES).map(value => choice(value, language => tIn(language, `sound.${value}`))))),
   command('statistiky')
     .addUserOption(o => option(o, 'kdo', 'cmd.statistiky.kdo'))
     .addStringOption(o => option(o, 'obdobi', 'cmd.statistiky.obdobi')
-      .addChoices(...Object.entries(PERIODS).map(([value, { label }]) => choice(value, label, tIn('en', `period.${value}`))))),
+      .addChoices(...Object.keys(PERIODS).map(value => choice(value, language => tIn(language, `period.${value}`))))),
   command('stav'),
   command('filmy')
     .addStringOption(o => option(o, 'zanr', 'cmd.filmy.zanr').setAutocomplete(true))
     .addStringOption(o => option(o, 'rok', 'cmd.filmy.rok'))
     .addBooleanOption(o => option(o, 'cesky', 'cmd.filmy.cesky'))
     .addStringOption(o => option(o, 'razeni', 'cmd.filmy.razeni').addChoices(
-      ...Object.entries(SORTS).map(([value, { label }]) => choice(value, label, tIn('en', `sort.${value}`))),
+      ...Object.keys(SORTS).map(value => choice(value, language => tIn(language, `sort.${value}`))),
     ))
     .addIntegerOption(o => option(o, 'strana', 'cmd.filmy.strana').setMinValue(1)),
   command('serialy')
@@ -90,3 +100,11 @@ export const setupCommand = command('nastavit')
   .addBooleanOption(o => option(o, 'pro_vsechny', 'cmd.nastavit.pro_vsechny'))
   .addBooleanOption(o => option(o, 'bez_seznamu', 'cmd.nastavit.bez_seznamu'))
   .toJSON();
+
+/** Turns a command that came in under its registered names into the names the code reads. */
+export function useCodeNames(interaction) {
+  const known = codeNames.get(interaction.commandName);
+  if (!known) return;
+  for (const given of interaction.options.data) given.name = known.options.get(given.name) ?? given.name;
+  interaction.commandName = known.name;
+}

@@ -71,6 +71,19 @@ export function fakeStreams() {
 
 export const nextTick = (ms = 5) => new Promise(resolve => setTimeout(resolve, ms));
 
+/** Repeats a check until it holds: for what is written to disk in the background, however slow the disk. */
+export async function eventually(check, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await check();
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await nextTick(10);
+    }
+  }
+}
+
 export function film({ id = 'a'.repeat(32), name = 'Film', minutes = 100, subtitles = [] } = {}) {
   return {
     Id: id,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
-import { fakeProcesses, fakeStreamer, fakeStreams, film, nextTick, testEnv } from './helpers.js';
+import { eventually, fakeProcesses, fakeStreamer, fakeStreams, film, nextTick, testEnv } from './helpers.js';
 
 testEnv();
 const { Player, UserError } = await import('../src/player.js');
@@ -94,7 +94,7 @@ test('stop while a play waits for its subtitles cancels it', async () => {
   try {
     const item = film({ id: 'b'.repeat(32), subtitles: [{ Type: 'Subtitle', Index: 5, IsTextSubtitleStream: true }] });
     const starting = play(item, { subtitleIndex: 5 });
-    await nextTick();
+    await eventually(() => assert.equal(typeof answer, 'function'));
     await player.stop();
     answer(new Response('subs'));
     assert.equal(await starting, false);
@@ -138,9 +138,9 @@ test('stop between two episodes, while the next waits for its subtitles, closes 
     streams.running[0].end();
     await nextTick();
     await player.queue;
-    assert.equal(player.countdown, 'Další díl');
+    await eventually(() => assert.equal(player.countdown, 'Další díl'));
     const next = play(film({ id, subtitles: [{ Type: 'Subtitle', Index: 5, IsTextSubtitleStream: true }] }), { subtitleIndex: 5 });
-    await nextTick();
+    await eventually(() => assert.equal(typeof answer, 'function'));
     await player.stop();
     answer(new Response('subs'));
     assert.equal(await next, false);
@@ -237,7 +237,7 @@ test('an older subtitle choice finishing late does not undo a newer one', async 
     const subtitles = [{ Type: 'Subtitle', Index: 5, IsTextSubtitleStream: true }, { Type: 'Subtitle', Index: 6, IsTextSubtitleStream: true }];
     await play(film({ id, subtitles }));
     const older = player.setTracks({ subtitleIndex: 5 });
-    await nextTick();
+    await eventually(() => assert.equal(typeof answer, 'function'));
     await player.setTracks({ subtitleIndex: 6 });
     answer(new Response('subs'));
     await older;

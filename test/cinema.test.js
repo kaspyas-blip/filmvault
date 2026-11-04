@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, beforeEach, test } from 'node:test';
 import { Collection } from 'discord.js';
-import { fakeProcesses, fakeStreamer, fakeStreams, film, nextTick, testEnv } from './helpers.js';
+import { eventually, fakeProcesses, fakeStreamer, fakeStreams, film, nextTick, testEnv } from './helpers.js';
 
 testEnv();
 const root = mkdtempSync(join(tmpdir(), 'filmvault-cinema-'));
@@ -16,7 +16,7 @@ const { Player } = await import('../src/player.js');
 
 after(() => {
   process.chdir(startDir);
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 
 const FILM = film({ id: 'a'.repeat(32), name: 'Duna', minutes: 100 });
@@ -186,7 +186,7 @@ beforeEach(() => {
   fakeJellyfin();
   w = world();
   // "data" is the first server, the one that keeps its progress in Jellyfin.
-  rmSync('data', { recursive: true, force: true });
+  rmSync('data', { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   main = w.addServer('g1', 'data');
   main.voice.members.set('p1', person('p1'));
 });
@@ -236,15 +236,15 @@ test('/stop keeps a button that goes on from there, with the same tracks', async
 test('a film played to the end has no go-on button and counts as watched', async () => {
   const started = await pust(main);
   await streamEnds(100 * 60 - 10);
-  assert.equal(buttonsOf(started.replyMessage).length, 0);
-  assert.equal(history('data')[0].finished, true);
+  await eventually(() => assert.equal(history('data')[0].finished, true));
+  await eventually(() => assert.equal(buttonsOf(started.replyMessage).length, 0));
 });
 
 test('a stream that broke in the middle is not watched, and comes back where it was', async () => {
   await pust(main);
   w.player.itemStartedAt -= 300_000;
   await streamEnds(1200);
-  assert.equal(history('data')[0].finished, false);
+  await eventually(() => assert.equal(history('data')[0].finished, false));
   await nextTick(3300);
   assert.equal(w.player.item?.Id, FILM.Id);
   const args = w.processes.started.at(-1).args;
@@ -255,8 +255,8 @@ test('broken with nobody in the call: it says so and offers to go on', async () 
   const started = await pust(main);
   main.voice.members.clear();
   await streamEnds(1200);
-  assert.match(started.replyMessage.embeds[0].description, /spadlo/);
-  assert.equal(buttonsOf(started.replyMessage)[0], `fr:1200:1::${FILM.Id}`);
+  await eventually(() => assert.match(started.replyMessage.embeds[0]?.description ?? '', /spadlo/));
+  await eventually(() => assert.equal(buttonsOf(started.replyMessage)[0], `fr:1200:1::${FILM.Id}`));
   assert.equal(w.player.item, null);
 });
 
@@ -283,7 +283,7 @@ test('/stop while the subtitles load cancels the start', async () => {
   mkdirSync('tmp', { recursive: true });
   const play = command(main, 'pust', { film: FILM.Id, titulky: '7' });
   const playing = main.cinema.handleInteraction(play);
-  await nextTick(30);
+  await eventually(() => assert.equal(typeof answerSubs, 'function'));
   assert.equal(main.cinema.busy(), true);
   const stop = command(main, 'stop');
   await main.cinema.handleInteraction(stop);
@@ -381,7 +381,7 @@ test('a restart with nobody in the call keeps the message and the history', asyn
   assert.equal(main.text.all.has(old.id), true);
   assert.equal(buttonsOf(old)[0], `fr:1500:1::${FILM.Id}`);
   assert.match(old.embeds[0].description, /Přerušeno/);
-  assert.equal(history('data')[0].position, 1500);
+  await eventually(() => assert.equal(history('data')[0].position, 1500));
 });
 
 test('a restart with people in the call goes on, and the old message goes', async () => {
@@ -410,7 +410,7 @@ test('a stale state and a fresh autoplay: the autoplay film from its own place, 
   await main.cinema.start();
   assert.equal(w.player.item.Id, FILM.Id);
   assert.equal(w.processes.started.at(-1).args.includes('-ss'), false);
-  assert.match(old.embeds[0].description, /Přerušeno/);
+  await eventually(() => assert.match(old.embeds[0]?.description ?? '', /Přerušeno/));
 });
 
 test('without the role: no control, but the help can be read', async () => {

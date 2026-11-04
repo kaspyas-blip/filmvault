@@ -109,21 +109,20 @@ for (const [language, result] of [['cs', czech], ['en', english]]) {
     assert.equal(new Set(all.map(c => c.name)).size, all.length);
     for (const command of all) {
       for (const level of [command, ...(command.options ?? [])]) {
-        // Registered names are the Czech ones, whatever the language: the code reads them.
         assert.match(level.name, /^[-_a-z0-9]{1,32}$/);
         const names = (level.options ?? []).map(o => o.name_localizations['en-US']);
         assert.equal(new Set(names).size, names.length, `${command.name} option names`);
       }
       for (const entry of localized([command])) {
         assert.ok(entry.description.length >= 1 && entry.description.length <= 100, `${entry.name}: ${entry.description}`);
-        for (const locale of ['en-US', 'en-GB']) {
+        for (const locale of ['en-US', 'en-GB', 'cs']) {
           assert.match(entry.name_localizations?.[locale] ?? '', /^[-_a-z0-9]{1,32}$/, `${entry.name} ${locale}`);
           const text = entry.description_localizations?.[locale] ?? '';
           assert.ok(text.length >= 1 && text.length <= 100, `${entry.name} ${locale}: ${text}`);
         }
         for (const choice of entry.choices) {
           assert.ok(choice.name.length >= 1 && choice.name.length <= 100, choice.name);
-          for (const locale of ['en-US', 'en-GB']) {
+          for (const locale of ['en-US', 'en-GB', 'cs']) {
             assert.ok(choice.name_localizations[locale].length <= 100, choice.name_localizations[locale]);
           }
         }
@@ -132,9 +131,14 @@ for (const [language, result] of [['cs', czech], ['en', english]]) {
   });
 }
 
-test('commands keep their Czech names and English clients see English ones', () => {
+test('commands are registered in the configured language, and clients see their own', () => {
   const names = result => result.commands.map(c => c.name);
-  assert.deepEqual(names(english), names(czech));
+  assert.deepEqual(names(english), czech.commands.map(c => c.name_localizations['en-US']));
+  assert.deepEqual(english.commands.map(c => c.name_localizations.cs), names(czech));
+  assert.equal(names(english)[0], 'play');
+  assert.equal(english.setupCommand.name, 'setup');
+  assert.deepEqual(english.commands[0].options.map(o => o.name), ['movie', 'from', 'audio', 'subtitles']);
+  assert.equal(english.commands[0].description_localizations.cs, 'Pustí film nebo díl do kina');
   assert.deepEqual(names(czech), ['pust', 'pauza', 'pokracuj', 'posun', 'zvuk', 'titulky', 'kvalita', 'hlasitost', 'statistiky', 'stav', 'filmy', 'serialy', 'videli', 'zapsat', 'hraje', 'stop', 'odejdi']);
   assert.equal(czech.setupCommand.name, 'nastavit');
   assert.deepEqual(czech.commands.map(c => c.name_localizations['en-GB']), ['play', 'pause', 'resume', 'seek', 'audio', 'subtitles', 'quality', 'sound', 'stats', 'status', 'movies', 'series', 'watched', 'log', 'nowplaying', 'stop', 'leave']);
@@ -151,6 +155,13 @@ test('commands keep their Czech names and English clients see English ones', () 
   assert.deepEqual(quality.choices.map(c => c.value), ['vysoka', 'stredni', 'nizka']);
   assert.deepEqual(quality.choices.map(c => c.name.replace(/ \(.*/, '')), ['Vysoká', 'Střední', 'Nízká']);
   assert.deepEqual(quality.choices.map(c => c.name_localizations['en-GB'].replace(/ \(.*/, '')), ['High', 'Medium', 'Low']);
+});
+
+test('a command arrives under its registered name and the code reads its own', () => {
+  assert.deepEqual(english.incoming, { commandName: 'pust', od: '45', focused: 'film', movie: null });
+  assert.deepEqual(english.incomingSetup, { commandName: 'nastavit', role: 'kino' });
+  assert.deepEqual(english.incomingSound, { commandName: 'hlasitost', rezim: 'night' });
+  assert.deepEqual(czech.incoming, { commandName: 'pust', od: '45', focused: 'film', movie: null });
 });
 
 for (const [language, result] of [['cs', czech], ['en', english]]) {

@@ -3,7 +3,8 @@
 // modules make of them as JSON.
 const { config } = await import('../src/config.js');
 const { t } = await import('../src/i18n.js');
-const { commands, setupCommand } = await import('../src/commands.js');
+const { CommandInteractionOptionResolver } = await import('discord.js');
+const { commands, setupCommand, useCodeNames } = await import('../src/commands.js');
 const { helpTopic, keepHelpLast } = await import('../src/help.js');
 const { isPreferred } = await import('../src/jellyfin.js');
 const { formatDate } = await import('../src/browse.js');
@@ -30,12 +31,30 @@ async function helpMessage(wishlistChannelId, allowedRole) {
 const topics = {};
 for (const key of ['pust', 'ovladani', 'historie', 'seznam', 'samo', 'pomoc']) topics[key] = helpTopic(`help:${key}`, '222').toJSON();
 
+// As Discord reports a command: under its registered names, read by the real resolver of discord.js.
+function arrives(key, options) {
+  const interaction = {
+    commandName: t(`cmd.${key}.name`),
+    options: new CommandInteractionOptionResolver({}, options.map(([optionKey, value, focused]) => ({
+      name: t(`cmd.${key}.${optionKey}.name`), type: 3, value, ...(focused ? { focused } : {}),
+    })), {}),
+  };
+  useCodeNames(interaction);
+  return interaction;
+}
+const play = arrives('pust', [['od', '45'], ['film', 'Du', true]]);
+const setup = arrives('nastavit', [['role', 'kino']]);
+const sound = arrives('hlasitost', [['rezim', 'night']]);
+
 const now = new Date(2026, 9, 29, 12, 0);
 console.log(JSON.stringify({
   language: config.language,
   busy: t('cinema.busy'),
   commands,
   setupCommand,
+  incoming: { commandName: play.commandName, od: play.options.getString('od'), focused: play.options.getFocused(true).name, movie: play.options.get('movie') },
+  incomingSetup: { commandName: setup.commandName, role: setup.options.getString('role') },
+  incomingSound: { commandName: sound.commandName, rezim: sound.options.getString('rezim') },
   help: {
     withWishlist: await helpMessage('222', 'Kino'),
     withoutWishlist: await helpMessage(null, null),
