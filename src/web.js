@@ -10,11 +10,10 @@ import { UserError } from './player.js';
  */
 // Only these sites: yt-dlp would otherwise fetch whatever address anybody writes.
 const HOSTS = /^(?:(?:www|m|music)\.)?youtube\.com$|^youtu\.be$|^(?:www\.)?kick\.com$/i;
-// Picture and sound together, H.264 where there is one: the MiniPC decodes it with least effort.
-const FORMAT = 'b[height<=1080][vcodec^=avc1]/b[height<=1080]/bv*[height<=1080]+ba/b';
-// YouTube answers ffmpeg with 403 for the addresses of its other clients; this one's HLS
-// opens and seeks (1080p). The default clients work only for yt-dlp's own downloader.
-const YOUTUBE_CLIENT = 'youtube:player_client=web_safari';
+// HLS only: YouTube answers ffmpeg with 403 for its plain https addresses, HLS opens and
+// seeks. H.264 where there is one: the MiniPC decodes it with least effort. Kick is HLS too.
+const FORMAT = 'bv*[protocol^=m3u8][height<=1080][vcodec^=avc1]+ba[protocol^=m3u8]/b[protocol^=m3u8][height<=1080][vcodec^=avc1]'
+  + '/bv*[protocol^=m3u8][height<=1080]+ba[protocol^=m3u8]/b[protocol^=m3u8][height<=1080]/b[protocol^=m3u8]';
 const RESOLVE_TIMEOUT_MS = 90_000;
 const UPDATE_TIMEOUT_MS = 180_000;
 const MAX_NAME = 200;
@@ -66,7 +65,7 @@ function headerLines(format) {
 
 export async function webItem(url) {
   // --flat-playlist: without it a playlist or channel page loads every video it lists.
-  const output = await runYtDlp(['--no-playlist', '--flat-playlist', '--js-runtimes', 'node', '--extractor-args', YOUTUBE_CLIENT, '-f', FORMAT, '-J', '--', url.trim()], RESOLVE_TIMEOUT_MS).catch(error => {
+  const output = await runYtDlp(['--no-playlist', '--flat-playlist', '--js-runtimes', 'node', '-f', FORMAT, '-J', '--', url.trim()], RESOLVE_TIMEOUT_MS).catch(error => {
     if (error.code === 'ENOENT') throw new UserError('Přehrávání z YouTube a Kicku tu není nainstalované (chybí yt-dlp).');
     console.warn(`yt-dlp failed for ${url}:`, error.message);
     throw new UserError(`Tohle video se nepodařilo načíst: ${error.message.replace(/^ERROR:\s*/, '').slice(0, 300)}`);
@@ -75,7 +74,8 @@ export async function webItem(url) {
   if (data._type && data._type !== 'video') throw new UserError('Playlisty neumím, pošli odkaz na jedno video.');
   const formats = data.requested_formats ?? [data];
   const video = formats.find(f => f.vcodec && f.vcodec !== 'none') ?? formats[0];
-  const audio = formats.find(f => f !== video && f.acodec && f.acodec !== 'none');
+  // Not by its codec: HLS sound does not always name one.
+  const audio = formats.find(f => f !== video);
   const live = !!data.is_live;
   const channel = data.uploader ?? data.channel ?? null;
   // yt-dlp adds the date and time to the title of a live stream.
