@@ -1,7 +1,9 @@
 import { EmbedBuilder } from 'discord.js';
+import { config } from './config.js';
+import { t } from './i18n.js';
 import { itemsMeta } from './jellyfin.js';
 
-const ZONE = 'Europe/Prague';
+const ZONE = config.timezone;
 const ITEM_ID = /^[0-9a-f]{32}$/i;
 // Titles played less than this far apart count as one sitting (a marathon).
 const SITTING_GAP_MS = 30 * 60_000;
@@ -10,27 +12,26 @@ const DAY_STARTS_HOUR = 6;
 const META_CACHE_MS = 60 * 60_000;
 const VIEWER_MIN_SHARE = 0.5;
 const MEDALS = ['🥇', '🥈', '🥉', '4.', '5.'];
-const WEEKDAYS = ['v neděli', 'v pondělí', 'v úterý', 've středu', 've čtvrtek', 'v pátek', 'v sobotu'];
 // Restarts and recoveries start titles in the bot's own name; they are nobody's.
 const BOT_NAME = /^FilmVault\b|^restart$/i;
 
-/** Czech count: plural(2, 'film', 'filmy', 'filmů') = "2 filmy". */
-export function plural(n, one, few, many) {
-  return `${n} ${n === 1 ? one : n >= 2 && n <= 4 ? few : many}`;
+/** A count with its noun in the language's grammar: plural('film', 2) = "2 filmy" (plural.film in the catalog). */
+export function plural(noun, n) {
+  return t(`plural.${noun}`, { n });
 }
 // Viewers in the voice room are counted from this release on.
 export const VIEWERS_SINCE = Date.UTC(2026, 9, 30);
 
 export const PERIODS = {
-  mesic: { label: 'tento měsíc' },
-  minuly: { label: 'minulý měsíc' },
-  rok: { label: 'letos' },
-  vse: { label: 'celkově' },
+  mesic: { label: t('period.mesic') },
+  minuly: { label: t('period.minuly') },
+  rok: { label: t('period.rok') },
+  vse: { label: t('period.vse') },
 };
 
 let metaCache = { at: 0, byId: new Map() };
 
-function pragueParts(ms) {
+function zoneParts(ms) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
     timeZone: ZONE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', weekday: 'short', hourCycle: 'h23',
   }).formatToParts(new Date(ms)).map(p => [p.type, p.value]));
@@ -40,21 +41,22 @@ function pragueParts(ms) {
   };
 }
 
-/** Start of a Prague month as a timestamp (month 1-12, may overflow into the next year). */
+/** Start of a month in the configured zone as a timestamp (month 1-12, may overflow into the next year). */
 function monthStart(year, month) {
   const guess = Date.UTC(year, month - 1, 1);
-  // Prague is UTC+1 or +2; step back until the local date is the 1st at 00:00.
-  for (const offset of [1, 2]) {
-    const ms = guess - offset * 3600_000;
-    const p = pragueParts(ms);
-    if (p.day === 1 && p.hour === 0) return ms;
+  // Stepping back by the zone's offset lands on local midnight; the second round settles
+  // the offset in effect there, for a month that begins on the other side of a clock change.
+  let ms = guess;
+  for (let round = 0; round < 2; round++) {
+    const p = zoneParts(ms);
+    ms = guess - (Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - ms);
   }
-  return guess;
+  return ms;
 }
 
 /** [from, to) of a period key, `now` given for the monthly summary. */
 export function periodRange(key, now = Date.now()) {
-  const { year, month } = pragueParts(now);
+  const { year, month } = zoneParts(now);
   if (key === 'mesic') return [monthStart(year, month), Infinity];
   if (key === 'minuly') return [monthStart(year, month - 1), monthStart(year, month)];
   if (key === 'rok') return [monthStart(year, 1), Infinity];
@@ -62,7 +64,7 @@ export function periodRange(key, now = Date.now()) {
 }
 
 function eveningOf(ms) {
-  const p = pragueParts(ms - DAY_STARTS_HOUR * 3600_000);
+  const p = zoneParts(ms - DAY_STARTS_HOUR * 3600_000);
   return `${p.year}-${p.month}-${p.day}`;
 }
 
@@ -157,7 +159,7 @@ export async function computeStats({ entries, wishes, from = 0, to = Infinity })
     if (!entry.manual) {
       stats.seconds += seconds;
       stats.evenings.add(eveningOf(entry.startedAt));
-      stats.weekdays[pragueParts(entry.startedAt - DAY_STARTS_HOUR * 3600_000).weekday]++;
+      stats.weekdays[zoneParts(entry.startedAt - DAY_STARTS_HOUR * 3600_000).weekday]++;
     }
     // YouTube and Kick count as time watched, not as films.
     const isWeb = entry.id.startsWith('http');
@@ -174,7 +176,7 @@ export async function computeStats({ entries, wishes, from = 0, to = Infinity })
       person(starter).started++;
     }
 
-    const end = pragueParts(entry.endedAt);
+    const end = zoneParts(entry.endedAt);
     if (!entry.manual && end.hour >= 0 && end.hour < DAY_STARTS_HOUR) {
       const lateness = end.hour * 60 + end.minute;
       if (!stats.latest || lateness > stats.latest.lateness) stats.latest = { lateness, entry, time: `${end.hour}:${String(end.minute).padStart(2, '0')}` };
@@ -239,71 +241,70 @@ function named(stats, rows) {
 /** Badges a person has earned in the period. */
 function badges(p, rank) {
   const list = [];
-  if (rank === 0 && p.seconds > 0) list.push('👑 Král(ovna) kina');
-  if (p.seconds >= 50 * 3600) list.push('🎞️ Filmový maniak (50 h)');
-  else if (p.seconds >= 10 * 3600) list.push('🍿 Štamgast (10 h)');
-  if (p.maxSitting >= 4) list.push(`🏃 Maratonec (${p.maxSitting} v kuse)`);
-  if (p.nightOwl) list.push('🦉 Noční sova (po 2. ráno)');
-  if (p.episodes >= 25) list.push('📺 Seriálový nadšenec (25 dílů)');
-  if (p.started >= 20) list.push('🎬 Promítač (20 puštění)');
-  if (p.added >= 10) list.push('📝 Kurátor (10 přání)');
-  if (p.fulfilled >= 3) list.push('🎯 Trefa (3 splněná přání)');
+  if (rank === 0 && p.seconds > 0) list.push(t('stats.badge.king'));
+  if (p.seconds >= 50 * 3600) list.push(t('stats.badge.maniac'));
+  else if (p.seconds >= 10 * 3600) list.push(t('stats.badge.regular'));
+  if (p.maxSitting >= 4) list.push(t('stats.badge.marathon', { n: p.maxSitting }));
+  if (p.nightOwl) list.push(t('stats.badge.owl'));
+  if (p.episodes >= 25) list.push(t('stats.badge.series'));
+  if (p.started >= 20) list.push(t('stats.badge.projectionist'));
+  if (p.added >= 10) list.push(t('stats.badge.curator'));
+  if (p.fulfilled >= 3) list.push(t('stats.badge.sharp'));
   return list;
 }
 
 export function serverEmbed(stats, periodLabel) {
-  const weekday = stats.weekdays.some(Boolean) ? WEEKDAYS[stats.weekdays.indexOf(Math.max(...stats.weekdays))] : null;
+  const weekday = stats.weekdays.some(Boolean) ? t(`stats.weekday.${stats.weekdays.indexOf(Math.max(...stats.weekdays))}`) : null;
   const replay = [...stats.replays].map(([label, days]) => [label, days.size]).filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1])[0];
   const records = [
     stats.marathon && stats.marathon.count > 1
-      && `🏃 Nejdelší maraton: **${plural(stats.marathon.count, 'titul', 'tituly', 'titulů')}**, ${formatHours(stats.marathon.seconds)} v kuse`,
-    stats.latest && `🦉 Nejpozději do noci: do **${stats.latest.time}** (${stats.latest.entry.label})`,
-    replay && `🔁 Nejvíc opakované: **${replay[0]}** (${replay[1]}×)`,
-    weekday && `📅 Nejčastěji koukáme **${weekday}**`,
+      && t('stats.recordMarathon', { titles: plural('titul', stats.marathon.count), hours: formatHours(stats.marathon.seconds) }),
+    stats.latest && t('stats.recordLatest', { time: stats.latest.time, label: stats.latest.entry.label }),
+    replay && t('stats.recordReplay', { label: replay[0], n: replay[1] }),
+    weekday && t('stats.recordWeekday', { weekday }),
   ].filter(Boolean);
   return new EmbedBuilder()
     .setColor(0xf0b232)
-    .setTitle(`📊 Statistiky kina · ${periodLabel}`)
+    .setTitle(t('stats.title', { period: periodLabel }))
     .setDescription([
-      `**${formatHours(stats.seconds)}** v kině · **${plural(stats.evenings.size, 'večer', 'večery', 'večerů')}**`,
-      `✅ Dokoukáno ${plural(stats.films, 'film', 'filmy', 'filmů')} a ${plural(stats.episodes, 'díl', 'díly', 'dílů')}`
-        + ` · ${plural(stats.titles, 'puštění', 'puštění', 'puštění')} celkem`,
-      `📝 Na seznamu přání ${stats.wishesOpen >= 2 && stats.wishesOpen <= 4 ? 'čekají' : 'čeká'} ${plural(stats.wishesOpen, 'film', 'filmy', 'filmů')}`,
+      t('stats.summaryTime', { hours: formatHours(stats.seconds), evenings: plural('vecer', stats.evenings.size) }),
+      t('stats.summaryDone', { films: plural('film', stats.films), episodes: plural('dil', stats.episodes), titles: plural('pusteni', stats.titles) }),
+      t('stats.wishesOpen', { n: stats.wishesOpen }),
     ].join('\n'))
     .addFields(
-      { name: '👀 Nejvíc času v kině', value: ranking(named(stats, top(stats.viewers)), formatHours), inline: true },
-      { name: '🎬 Nejčastěji pouští', value: ranking(named(stats, top(stats.starters)), n => `${n}×`), inline: true },
+      { name: t('stats.fieldViewers'), value: ranking(named(stats, top(stats.viewers)), formatHours), inline: true },
+      { name: t('stats.fieldStarters'), value: ranking(named(stats, top(stats.starters)), n => `${n}×`), inline: true },
       { name: '​', value: '​', inline: false },
-      { name: '📝 Nejvíc přání', value: ranking(named(stats, top(stats.adders)), n => plural(n, 'film', 'filmy', 'filmů')), inline: true },
-      { name: '🎯 Splněná přání', value: ranking(named(stats, top(stats.fulfilled)), n => `${n}×`), inline: true },
+      { name: t('stats.fieldAdders'), value: ranking(named(stats, top(stats.adders)), n => plural('film', n)), inline: true },
+      { name: t('stats.fieldFulfilled'), value: ranking(named(stats, top(stats.fulfilled)), n => `${n}×`), inline: true },
       { name: '​', value: '​', inline: false },
-      { name: '📺 Seriály', value: ranking(top(stats.series), n => plural(n, 'díl', 'díly', 'dílů')), inline: true },
-      { name: '🎭 Žánry', value: ranking(top(stats.genres), formatHours), inline: true },
-      { name: '🏅 Rekordy', value: records.join('\n') || '—', inline: false },
+      { name: t('stats.fieldSeries'), value: ranking(top(stats.series), n => plural('dil', n)), inline: true },
+      { name: t('stats.fieldGenres'), value: ranking(top(stats.genres), formatHours), inline: true },
+      { name: t('stats.fieldRecords'), value: records.join('\n') || '—', inline: false },
     )
-    .setFooter({ text: 'Čas diváků se měří od 30. 10. 2026 · /statistiky kdo:@někdo ukáže osobní' });
+    .setFooter({ text: t('stats.footer') });
 }
 
 export function personEmbed(stats, key, displayName, periodLabel) {
   const p = stats.perPerson.get(key);
   const embed = new EmbedBuilder().setColor(0x57f287).setTitle(`👤 ${displayName} · ${periodLabel}`);
-  if (!p) return embed.setDescription('Zatím tu nic není. Přijď do kina! 🍿');
+  if (!p) return embed.setDescription(t('stats.personEmpty'));
   const rank = top(stats.viewers, Infinity).findIndex(([k]) => k === key);
   const starterRank = top(stats.starters, Infinity).findIndex(([k]) => k === key);
   const adderRank = top(stats.adders, Infinity).findIndex(([k]) => k === key);
   const favourite = map => top(map, 1)[0]?.[0] ?? '—';
-  const place = (index, of) => (index >= 0 ? `${index + 1}. z ${of}` : '—');
+  const place = (index, of) => (index >= 0 ? t('stats.place', { rank: index + 1, of }) : '—');
   const earned = badges(p, rank);
   embed.addFields(
-    { name: '👀 V kině', value: `**${formatHours(p.seconds)}**\n${place(rank, stats.viewers.size)}`, inline: true },
-    { name: '🎬 Pustil(a)', value: `**${p.started}×**\n${place(starterRank, stats.starters.size)}`, inline: true },
-    { name: '📝 Přání', value: `**${p.added}** přidáno\n🎯 ${p.fulfilled} splněno · ${place(adderRank, stats.adders.size)}`, inline: true },
-    { name: '✅ Dokoukáno', value: `${plural(p.films, 'film', 'filmy', 'filmů')} · ${plural(p.episodes, 'díl', 'díly', 'dílů')}`, inline: true },
-    { name: '🎭 Oblíbený žánr', value: favourite(p.genres), inline: true },
-    { name: '📺 Oblíbený seriál', value: favourite(p.series), inline: true },
-    { name: '🏅 Odznaky', value: earned.join('\n') || 'Zatím žádné. Další film to spraví!', inline: false },
+    { name: t('stats.personCinema'), value: `**${formatHours(p.seconds)}**\n${place(rank, stats.viewers.size)}`, inline: true },
+    { name: t('stats.personStarted'), value: `**${p.started}×**\n${place(starterRank, stats.starters.size)}`, inline: true },
+    { name: t('stats.personWishes'), value: t('stats.personWishesValue', { added: p.added, fulfilled: p.fulfilled, place: place(adderRank, stats.adders.size) }), inline: true },
+    { name: t('stats.personDone'), value: `${plural('film', p.films)} · ${plural('dil', p.episodes)}`, inline: true },
+    { name: t('stats.personGenre'), value: favourite(p.genres), inline: true },
+    { name: t('stats.personSeries'), value: favourite(p.series), inline: true },
+    { name: t('stats.personBadges'), value: earned.join('\n') || t('stats.personNoBadges'), inline: false },
   );
-  if (p.first) embed.setFooter({ text: `Poprvé v kině (od měření) ${new Date(p.first).toLocaleDateString('cs-CZ', { timeZone: ZONE })}` });
+  if (p.first) embed.setFooter({ text: t('stats.firstSeen', { date: new Date(p.first).toLocaleDateString(t('locale'), { timeZone: ZONE }) }) });
   return embed;
 }
 

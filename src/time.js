@@ -32,7 +32,7 @@ export function parseTime(text) {
   return { seconds: sign === '-' ? -seconds : seconds, relative: true };
 }
 
-const DAY_WORDS = { dnes: 0, dneska: 0, vcera: 1, včera: 1, predevcirem: 2, předevčírem: 2 };
+const DAY_WORDS = { dnes: 0, dneska: 0, today: 0, vcera: 1, včera: 1, yesterday: 1, predevcirem: 2, předevčírem: 2 };
 const DEFAULT_HOUR = 20;
 
 /**
@@ -44,7 +44,7 @@ const DEFAULT_HOUR = 20;
 export function parseWhen(text, now = new Date()) {
   const input = text?.trim().toLowerCase().replace(/\s+/g, ' ') ?? '';
   if (!input) return now.getTime();
-  const match = /^(?:(dnes|dneska|včera|vcera|předevčírem|predevcirem)|(\d{1,2})\.\s?(\d{1,2})\.?(?:\s?(\d{4}))?)?\s?(?:(\d{1,2}):(\d{2}))?$/.exec(input);
+  const match = /^(?:(dnes|dneska|today|včera|vcera|yesterday|předevčírem|predevcirem)|(\d{1,2})\.\s?(\d{1,2})\.?(?:\s?(\d{4}))?)?\s?(?:(\d{1,2}):(\d{2}))?$/.exec(input);
   if (!match || (!match[1] && !match[2] && !match[5])) return null;
   const [, word, day, month, year, hour, minute] = match;
   const date = new Date(now);

@@ -2,9 +2,11 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 
 // Before anything imports config.js. Nothing here talks to Discord or Jellyfin.
+// The tests read Czech texts: the language settings of a .env do not leak in.
 export function testEnv() {
   Object.assign(process.env, {
     BOT_TOKEN: 'test', STREAMER_TOKEN: 'test', JELLYFIN_URL: 'http://jellyfin.test', JELLYFIN_API_KEY: 'secret-jellyfin-key', VIDEO_ENCODER: 'h264_qsv',
+    LANGUAGE: 'cs', PREFERRED_LANGUAGE: 'cs', TIMEZONE: 'Europe/Prague',
   });
 }
 

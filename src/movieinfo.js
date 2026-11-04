@@ -1,11 +1,14 @@
 import { config } from './config.js';
+import { t } from './i18n.js';
 
-// Movie facts for the wishlist: TMDB for Czech titles, overviews, posters and the
+// Movie facts for the wishlist: TMDB for localized titles, overviews, posters and the
 // IMDb ID; OMDb for the IMDb rating (IMDb itself has no free API).
 
 const TMDB = 'https://api.themoviedb.org/3';
 const POSTER_BASE = 'https://image.tmdb.org/t/p/w342';
 const CHOICES = 5;
+// Tried after the cinema's own language: TMDB has an English title for nearly everything.
+const FALLBACK_LANGUAGE = 'en-US';
 // A film counts as the obvious one when it has this many times the votes of the next.
 const DOMINANT = 4;
 // Results must contain most of the written words, so chat ("taky ne") adds nothing.
@@ -96,15 +99,16 @@ export async function findMovie(text) {
   // TMDB wants the words in title order and with diacritics; the longest word alone
   // catches "kryci jmeni zohan" (Zohan: Krycí jméno Kadeřník).
   const longest = normalizeTitle(title).split(' ').sort((a, b) => b.length - a.length)[0];
-  let results = await search(title, 'cs-CZ');
-  if (!results.length) results = await search(title, 'en-US');
-  if (!results.length && longest?.length >= 4 && longest !== normalizeTitle(title)) results = await search(longest, 'cs-CZ');
+  const language = t('tmdbLanguage');
+  let results = await search(title, language);
+  if (!results.length && language !== FALLBACK_LANGUAGE) results = await search(title, FALLBACK_LANGUAGE);
+  if (!results.length && longest?.length >= 4 && longest !== normalizeTitle(title)) results = await search(longest, language);
   // The "year" may be part of the title: Blade Runner 2049.
-  if (!results.length && year) results = await search(`${title} ${year}`, 'cs-CZ', `${title} ${year}`, null);
+  if (!results.length && year) results = await search(`${title} ${year}`, language, `${title} ${year}`, null);
   // A sequel without its number in the title ("Mizerové 3" is Mizerové navždy): offer the series.
   const series = /^(.+?)\s+\d{1,2}$/.exec(title)?.[1];
   if (!results.length && series) {
-    const parts = await search(series, 'cs-CZ', series);
+    const parts = await search(series, language, series);
     if (parts.length) return { choices: parts.sort((a, b) => (a.year ?? 0) - (b.year ?? 0)).slice(0, CHOICES) };
   }
   if (!results.length) return {};
@@ -123,7 +127,7 @@ export async function findMovie(text) {
 
 function trailerUrl(videos) {
   const list = (videos?.results ?? []).filter(v => v.site === 'YouTube' && v.type === 'Trailer');
-  const pick = list.find(v => v.iso_639_1 === 'cs') ?? list.find(v => v.official) ?? list[0];
+  const pick = list.find(v => v.iso_639_1 === t('tmdbLanguage').slice(0, 2)) ?? list.find(v => v.official) ?? list[0];
   return pick ? `https://www.youtube.com/watch?v=${pick.key}` : null;
 }
 
@@ -139,27 +143,29 @@ async function omdb(imdbId) {
   return data?.Response === 'True' ? data : null;
 }
 
-/** Everything the card shows. Czech text where TMDB has it, English otherwise. */
+/** Everything the card shows. Text in the cinema's language where TMDB has it, English otherwise. */
 export async function movieDetails(tmdbId) {
-  const cs = await tmdb(`/movie/${tmdbId}`, { language: 'cs-CZ', append_to_response: 'external_ids,videos', include_video_language: 'cs,en' });
-  const imdbId = cs.imdb_id || cs.external_ids?.imdb_id || null;
-  const [en, imdb] = await Promise.all([
-    cs.overview ? null : tmdb(`/movie/${tmdbId}`, { language: 'en-US' }).catch(() => null),
+  const language = t('tmdbLanguage');
+  const videoLanguages = [...new Set([language.slice(0, 2), 'en'])].join(',');
+  const localized = await tmdb(`/movie/${tmdbId}`, { language, append_to_response: 'external_ids,videos', include_video_language: videoLanguages });
+  const imdbId = localized.imdb_id || localized.external_ids?.imdb_id || null;
+  const [english, imdb] = await Promise.all([
+    localized.overview || language === FALLBACK_LANGUAGE ? null : tmdb(`/movie/${tmdbId}`, { language: FALLBACK_LANGUAGE }).catch(() => null),
     omdb(imdbId),
   ]);
   const number = text => (text && text !== 'N/A' ? text : null);
   return {
-    tmdbId: cs.id,
+    tmdbId: localized.id,
     imdbId,
-    title: cs.title,
-    originalTitle: cs.original_title,
-    year: cs.release_date ? Number(cs.release_date.slice(0, 4)) : null,
-    overview: cs.overview || en?.overview || '',
-    runtime: cs.runtime || null,
-    genres: (cs.genres ?? []).map(g => g.name),
-    poster: cs.poster_path ? POSTER_BASE + cs.poster_path : null,
-    trailer: trailerUrl(cs.videos),
-    rating: number(imdb?.imdbRating) ? Number(imdb.imdbRating) : (cs.vote_average ? Math.round(cs.vote_average * 10) / 10 : null),
+    title: localized.title,
+    originalTitle: localized.original_title,
+    year: localized.release_date ? Number(localized.release_date.slice(0, 4)) : null,
+    overview: localized.overview || english?.overview || '',
+    runtime: localized.runtime || null,
+    genres: (localized.genres ?? []).map(g => g.name),
+    poster: localized.poster_path ? POSTER_BASE + localized.poster_path : null,
+    trailer: trailerUrl(localized.videos),
+    rating: number(imdb?.imdbRating) ? Number(imdb.imdbRating) : (localized.vote_average ? Math.round(localized.vote_average * 10) / 10 : null),
     ratingSource: number(imdb?.imdbRating) ? 'IMDb' : 'TMDB',
     votes: number(imdb?.imdbVotes),
     director: number(imdb?.Director),

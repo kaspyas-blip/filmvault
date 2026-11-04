@@ -3,6 +3,7 @@ import { createCinema } from './cinema.js';
 import { setupCommand } from './commands.js';
 import { config } from './config.js';
 import { loadGuilds, saveGuilds } from './guilds.js';
+import { t } from './i18n.js';
 import { updateYtDlp } from './web.js';
 
 const YTDLP_UPDATE_MS = 24 * 60 * 60_000;
@@ -106,13 +107,13 @@ export function startBot(player) {
 
   async function handleSetup(interaction) {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      return interaction.reply({ content: 'Kino nastavuje jen správce serveru.', flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: t('bot.notAdmin'), flags: MessageFlags.Ephemeral });
     }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const id = interaction.guildId;
     const old = setups[id];
     const running = cinemas.get(id);
-    if (running?.busy()) return interaction.editReply('Kino teď na tomhle serveru hraje. Změň nastavení, až dohraje nebo po /stop.');
+    if (running?.busy()) return interaction.editReply(t('bot.busyHere'));
     const { options } = interaction;
     setups[id] = {
       textChannelId: options.getChannel('textovy', true).id,
@@ -125,7 +126,7 @@ export function startBot(player) {
     await saveGuilds(setups);
     const notes = [];
     if (!player.streamer.client.guilds.cache.has(id)) {
-      notes.push('⚠️ Streamovací účet na tomhle serveru není. Pozvi ho, a musí vidět hlasový kanál, jinak se film nepustí.');
+      notes.push(t('bot.noStreamer'));
     }
     if (running) {
       cinemas.delete(id);
@@ -134,7 +135,7 @@ export function startBot(player) {
     const guild = await client.guilds.fetch(id);
     await guild.channels.fetch();
     await startCinema(guild, addCinema(guild, setups[id]));
-    notes.unshift('✅ Kino je nastavené, návod najdeš v textovém kanálu.');
+    notes.unshift(t('bot.setupDone'));
     return interaction.editReply(notes.join('\n'));
   }
 
@@ -150,14 +151,14 @@ export function startBot(player) {
     if (interaction.isChatInputCommand() && interaction.commandName === 'nastavit') {
       return handleSetup(interaction).catch(error => {
         console.error('Setup failed:', error);
-        const answer = { content: `Nastavení se nepovedlo: ${error.message}`, flags: MessageFlags.Ephemeral };
+        const answer = { content: t('bot.setupFailed', { error: error.message }), flags: MessageFlags.Ephemeral };
         return (interaction.deferred ? interaction.followUp(answer) : interaction.reply(answer)).catch(() => {});
       });
     }
     const cinema = cinemas.get(interaction.guildId);
     if (cinema) return cinema.handleInteraction(interaction);
     if (interaction.isRepliable()) {
-      return interaction.reply({ content: 'Kino tu ještě není nastavené. Správce ho nastaví přes /nastavit.', flags: MessageFlags.Ephemeral }).catch(() => {});
+      return interaction.reply({ content: t('bot.notSetUp'), flags: MessageFlags.Ephemeral }).catch(() => {});
     }
     return undefined;
   });

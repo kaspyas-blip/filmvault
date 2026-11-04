@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { config } from './config.js';
+import { t } from './i18n.js';
 import { UserError } from './player.js';
 
 /**
@@ -49,7 +50,7 @@ function runYtDlp(args, timeout) {
       // Its helper processes keep the output open, so the whole tree goes and nothing waits for it.
       if (process.platform === 'win32') spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
       else proc.kill();
-      reject(new Error('yt-dlp neodpovídá'));
+      reject(new Error(t('web.ytdlpSilent')));
     }, timeout);
     proc.stdout.on('data', chunk => out.push(chunk));
     proc.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
@@ -76,18 +77,18 @@ export async function webItem(url) {
   // extractor, which would follow a redirect from these sites to anywhere.
   const address = new URL(url.trim()).href;
   const output = await runYtDlp(['--no-playlist', '--flat-playlist', '--use-extractors', 'default,-generic', '--js-runtimes', 'node', '-f', FORMAT, '-J', '--', address], RESOLVE_TIMEOUT_MS).catch(error => {
-    if (error.code === 'ENOENT') throw new UserError('Přehrávání z YouTube a Kicku tu není nainstalované (chybí yt-dlp).');
+    if (error.code === 'ENOENT') throw new UserError(t('web.ytdlpMissing'));
     console.warn(`yt-dlp failed for ${url}:`, error.message);
-    throw new UserError(`Tohle video se nepodařilo načíst: ${error.message.replace(/^ERROR:\s*/, '').slice(0, 300)}`);
+    throw new UserError(t('web.loadFailed', { error: error.message.replace(/^ERROR:\s*/, '').slice(0, 300) }));
   });
   return itemFromYtDlp(JSON.parse(output), url);
 }
 
 /** data: what yt-dlp says about the page. */
 export function itemFromYtDlp(data, url) {
-  if (data._type && data._type !== 'video') throw new UserError('Playlisty neumím, pošli odkaz na jedno video.');
+  if (data._type && data._type !== 'video') throw new UserError(t('web.noPlaylists'));
   const formats = data.requested_formats ?? [data];
-  if (formats.some(f => !/^https:/.test(f.url ?? ''))) throw new UserError('Tohle video se nedá přehrát.');
+  if (formats.some(f => !/^https:/.test(f.url ?? ''))) throw new UserError(t('web.notPlayable'));
   const video = formats.find(f => f.vcodec && f.vcodec !== 'none') ?? formats[0];
   // Not by its codec: HLS sound does not always name one.
   const audio = formats.find(f => f !== video);
