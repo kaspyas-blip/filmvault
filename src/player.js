@@ -42,6 +42,9 @@ const AUDIO_HOLD_MAX_MS = 3000;
 // A web video played from its start holds the first frame this long. Viewers' picture takes
 // a moment to catch on (see patchConnection), and unlike a film's logos, its first words count.
 const WEB_LEAD_IN_SECONDS = 5;
+// A stream that stops this close to the item's length counts as played to the end
+// (the length Jellyfin reports and the file's real one differ by seconds).
+const END_TOLERANCE_SECONDS = 60;
 // Receivers may buffer up to this much (10 ms units) so resent packets arrive in time.
 // Viewers' stats show Discord does not pass a minimum on (Minimum Playout Delay 0 ms).
 const PLAYOUT_DELAY_MAX = 600;
@@ -258,8 +261,8 @@ async function discordIncident() {
 
 function subtitleFile(item, source, stream) {
   const key = `${item.Id}-${stream.Index}`;
+  const file = `tmp/subtitles-${key}.ass`;
   if (!subtitleFiles.has(key)) {
-    const file = `tmp/subtitles-${key}.ass`;
     const job = (async () => {
       const existing = await stat(file).catch(() => null);
       if (existing?.size) return file;
@@ -274,7 +277,12 @@ function subtitleFile(item, source, stream) {
       setTimeout(() => subtitleFiles.delete(key), SUBTITLE_RETRY_MS).unref();
     });
   }
-  return subtitleFiles.get(key).catch(() => {
+  return subtitleFiles.get(key).then(async done => {
+    // Someone cleaned tmp/ meanwhile: ffmpeg would fail on the missing file.
+    if (await stat(done).then(() => true, () => false)) return done;
+    subtitleFiles.delete(key);
+    return subtitleFile(item, source, stream);
+  }, () => {
     throw new UserError('Tyhle titulky se z Jellyfinu nepodařilo načíst, zkus jiné.');
   });
 }
@@ -295,9 +303,18 @@ function withTimeout(promise, ms, message) {
  * playing for any reason, emitted before 'ended'/'failed'.
  */
 export class Player extends EventEmitter {
-  constructor() {
+  /** streamer, startProcess, startStream: the outside world, replaced in tests. */
+  constructor({ streamer = new Streamer(new Client()), startProcess = spawn, startStream = playStream } = {}) {
     super();
-    this.streamer = new Streamer(new Client());
+    this.streamer = streamer;
+    this.startProcess = startProcess;
+    this.startStream = startStream;
+    // Raised by every play, stop and leave: a play still waiting for its subtitles
+    // when a newer request comes in does nothing.
+    this.request = 0;
+    this.subtitleRequest = 0;
+    this.softwareItemId = null; // the item whose hardware encoding failed
+    this.subtitleFailed = false;
     this.guildId = null;
     this.channelId = null;
     this.item = null;
@@ -326,7 +343,24 @@ export class Player extends EventEmitter {
     this.idleTimer = null;
     this.queue = Promise.resolve();
     this.patchStreamer();
-    setInterval(() => this.tick(), TICK_MS).unref();
+    this.streamer.client?.on?.('voiceStateUpdate', (_, state) => this.onOwnVoiceState(state));
+    this.ticker = setInterval(() => this.tick(), TICK_MS);
+    this.ticker.unref();
+  }
+
+  /** Thrown out of the call (a moderator, a Discord hiccup): frames would go nowhere. */
+  onOwnVoiceState(state) {
+    if (state.id !== this.streamer.client.user?.id || state.channelId || !this.channelId || state.guild?.id !== this.guildId) return;
+    console.warn('The streaming account was disconnected from the call');
+    this.run(async () => {
+      if (!this.channelId) return;
+      const item = this.item;
+      const position = this.position();
+      this.reset();
+      this.leaveVoice();
+      this.channelId = null;
+      if (item) this.emit('failed', item, 'kino bylo odpojeno z hovoru', position);
+    }).catch(error => console.error('Handling the disconnect failed:', error));
   }
 
   // Seeking restarts ffmpeg; keeping the Go Live session open means viewers
@@ -336,16 +370,28 @@ export class Player extends EventEmitter {
     const stop = this.streamer.stopStream.bind(this.streamer);
     this.streamer.createStream = async () => {
       const session = this.session ?? { ac: { signal: AbortSignal.abort() } };
-      this.liveConn ??= patchConnection(
-        await create(),
-        () => this.holdingLive,
-        () => (QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY]).bitrate,
-      );
-      return sessionView(this.liveConn, session);
+      // A restart during the first, slow create shares it instead of opening a second stream.
+      if (!this.liveConn && !this.liveCreating) {
+        const creating = create().then(conn => {
+          const patched = patchConnection(
+            conn,
+            () => this.holdingLive,
+            () => (QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY]).bitrate,
+          );
+          if (this.liveCreating === creating) this.liveConn = patched;
+          return patched;
+        }).finally(() => {
+          if (this.liveCreating === creating) this.liveCreating = null;
+        });
+        this.liveCreating = creating;
+      }
+      return sessionView(this.liveCreating ? await this.liveCreating : this.liveConn, session);
     };
     this.streamer.stopStream = () => {
       if (this.holdingLive) return;
       this.liveConn = null;
+      // The library's create never settles after a stop: the next stream starts its own.
+      this.liveCreating = null;
       stop();
     };
   }
@@ -413,9 +459,12 @@ export class Player extends EventEmitter {
   /** autoSkipIntro: skip this item's intro by itself (see tick). */
   /** guildId, quality, sound: of the server it plays for (the account is on one call at a time). */
   async play({ item, guildId = this.guildId, channelId, quality = this.quality, sound = this.sound, startSeconds = 0, audioIndex = null, subtitleIndex = null, countdown = null, autoSkipIntro = false }) {
+    const request = ++this.request;
+    clearTimeout(this.idleTimer);
     // Outside the queue: the download can take a minute, and pause or stop must not wait for it.
     const source = mediaSource(item);
     let subtitle;
+    let subtitleFailed = false;
     try {
       subtitle = await this.prepareSubtitle(item, source, subtitleIndex);
     } catch (error) {
@@ -423,8 +472,10 @@ export class Player extends EventEmitter {
       console.warn(`Subtitles of ${item.Name} failed, playing without them:`, error.message);
       subtitle = null;
       subtitleIndex = null;
+      subtitleFailed = true;
     }
     return this.run(async () => {
+      if (request !== this.request) return false;
       this.emitStopped(false);
       this.endSession({ keepLive: true });
       try {
@@ -436,12 +487,30 @@ export class Player extends EventEmitter {
         throw error;
       }
       clearTimeout(this.idleTimer);
+      // Stopped or left while joining the call.
+      if (request !== this.request) {
+        this.item = null;
+        this.reset();
+        return false;
+      }
       Object.assign(this, {
-        item, source, audioIndex, subtitleIndex, subtitle, countdown, quality, sound, itemStartedAt: Date.now(), segments: null,
+        item, source, audioIndex, subtitleIndex, subtitle, subtitleFailed, countdown, quality, sound, itemStartedAt: Date.now(), segments: null,
         introSkipped: false, autoSkipIntro, stallRestarts: 0,
       });
-      this.startSession(this.clamp(startSeconds));
+      try {
+        this.startSession(this.clamp(startSeconds));
+      } catch (error) {
+        this.item = null;
+        this.reset();
+        throw error;
+      }
+      return true;
     });
+  }
+
+  /** Whatever waits to start (subtitles, joining the call) will not. */
+  cancelPending() {
+    this.request++;
   }
 
   pause() {
@@ -474,15 +543,20 @@ export class Player extends EventEmitter {
     });
   }
 
-  async setTracks({ audioIndex = this.audioIndex, subtitleIndex = this.subtitleIndex }) {
+  /** Only what is given changes; a slower older subtitle choice does not undo a newer one. */
+  async setTracks({ audioIndex, subtitleIndex }) {
     const { item, source } = this;
     if (!item) return;
+    const changes = audioIndex === undefined ? {} : { audioIndex };
+    const subtitleRequest = subtitleIndex === undefined ? null : ++this.subtitleRequest;
     // Prepared outside the queue, like in play().
-    const subtitle = subtitleIndex === this.subtitleIndex ? this.subtitle : await this.prepareSubtitle(item, source, subtitleIndex);
+    const subtitle = subtitleRequest ? await this.prepareSubtitle(item, source, subtitleIndex) : null;
     await this.run(async () => {
       if (this.item !== item) return;
+      if (subtitleRequest === this.subtitleRequest) Object.assign(changes, { subtitleIndex, subtitle, subtitleFailed: false });
+      if (!Object.keys(changes).length) return;
       const position = this.position();
-      Object.assign(this, { audioIndex, subtitleIndex, subtitle });
+      Object.assign(this, changes);
       if (this.paused) return;
       this.endSession({ keepLive: true });
       this.startSession(position);
@@ -535,16 +609,20 @@ export class Player extends EventEmitter {
   }
 
   stop() {
+    this.cancelPending();
     return this.run(async () => this.reset());
   }
 
   leave() {
-    return this.run(async () => {
-      this.reset();
-      clearTimeout(this.idleTimer);
-      this.leaveVoice();
-      this.channelId = null;
-    });
+    this.cancelPending();
+    return this.run(async () => this.leaveNow());
+  }
+
+  leaveNow() {
+    this.reset();
+    clearTimeout(this.idleTimer);
+    this.leaveVoice();
+    this.channelId = null;
   }
 
   /**
@@ -701,7 +779,14 @@ export class Player extends EventEmitter {
     }
   }
 
-  startSession(startSeconds, { softwareFallback = false } = {}) {
+  /** Whether the stream stopped at the item's real end, not just somewhere in it. */
+  reachedEnd() {
+    if (this.item?.web?.live) return false;
+    const { duration } = this;
+    return !duration || this.position() >= duration - END_TOLERANCE_SECONDS;
+  }
+
+  startSession(startSeconds, { softwareFallback = this.softwareItemId === this.item.Id } = {}) {
     const video = this.source.MediaStreams.find(s => s.Type === 'Video');
     // ffmpeg needs the file to exist. The old ffmpeg may still hold it for a moment;
     // then the old text stays and the next tick replaces it.
@@ -731,7 +816,7 @@ export class Player extends EventEmitter {
       sound: this.sound,
     });
     const ac = new AbortController();
-    const ff = spawn(config.ffmpegPath, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const ff = this.startProcess(config.ffmpegPath, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     // The held frame is not part of the video: its time starts when the frame moves on.
     const session = { ac, ff, startSeconds: startSeconds - leadIn, startedAt: null, createdAt: Date.now() };
     this.session = session;
@@ -757,7 +842,10 @@ export class Player extends EventEmitter {
       if (ac.signal.aborted || this.session !== session) return;
       const code = await withTimeout(exited, 5000, 'ffmpeg did not exit').catch(() => null);
       if (this.session !== session) return;
-      if (!error && code === 0) {
+      // ffmpeg exits with 0 also when its input breaks (Jellyfin restarted, a web address
+      // expired, a live stream cut off). Finished means it really got to the end.
+      const cleanExit = !error && code === 0;
+      if (cleanExit && this.reachedEnd()) {
         console.log(`Finished ${itemLabel(item)}`);
         this.run(async () => {
           if (this.session !== session) return;
@@ -767,10 +855,11 @@ export class Player extends EventEmitter {
         return;
       }
       const detail = (error?.message ?? '') + (stderr.trim() ? `\n${stderr.trim()}` : '');
-      console.error(`Stream failed (ffmpeg exit ${code}): ${detail}`);
+      console.error(`Stream failed (ffmpeg exit ${code}, at ${Math.round(this.position())}s): ${detail}`);
       const failedEarly = Date.now() - session.createdAt < HARDWARE_RETRY_WINDOW_MS;
-      if (failedEarly && !softwareFallback && config.encoder !== 'libx264') {
+      if (!cleanExit && failedEarly && !softwareFallback && config.encoder !== 'libx264') {
         console.warn('Retrying with software encoder');
+        this.softwareItemId = item.Id;
         this.run(async () => {
           if (this.session !== session) return;
           this.endSession({ keepLive: true });
@@ -782,11 +871,12 @@ export class Player extends EventEmitter {
         if (this.session !== session) return;
         const position = this.position();
         this.reset();
-        this.emit('failed', item, stderr.trim().split('\n').pop() || error?.message || 'neznámá chyba', position);
+        const message = cleanExit ? 'zdroj videa se přerušil' : stderr.trim().split('\n').pop() || error?.message || 'neznámá chyba';
+        this.emit('failed', item, message, position);
       });
     };
 
-    playStream(ff.stdout, this.streamer, { type: 'go-live' }, ac.signal)
+    this.startStream(ff.stdout, this.streamer, { type: 'go-live' }, ac.signal)
       .then(() => settle(null), error => settle(error));
   }
 
@@ -830,7 +920,10 @@ export class Player extends EventEmitter {
     clearTimeout(this.idleTimer);
     if (!this.channelId) return;
     this.idleTimer = setTimeout(() => {
-      if (!this.item) this.leave().catch(error => console.error('Idle leave failed:', error));
+      // Checked in the queue: something may be starting ahead of this.
+      this.run(async () => {
+        if (!this.item) this.leaveNow();
+      }).catch(error => console.error('Idle leave failed:', error));
     }, config.idleLeaveMinutes * 60_000);
   }
 }

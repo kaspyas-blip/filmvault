@@ -131,7 +131,7 @@ ID kanálu, serveru nebo role zkopíruješ, když v Discordu zapneš **Nastaven�
 npm start
 ```
 
-Když v konzoli uvidíš `Registered 17 slash commands`, je hotovo. Bot do textového kanálu sám pošle nápovědu a drží ji jako poslední zprávu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
+Když v konzoli uvidíš `Registered 18 slash commands`, je hotovo. Bot do textového kanálu sám pošle nápovědu a drží ji jako poslední zprávu. Připoj se do hlasového kanálu a napiš `/pust` a název filmu.
 
 ### 8. Automatické spouštění (Windows)
 
@@ -147,7 +147,7 @@ Na Linuxu použij třeba službu systemd nebo `pm2`.
 
 | Příkaz | Co dělá |
 | --- | --- |
-| `/nastavit textovy hlasovy [seznam] [role]` | nastaví kino na serveru (jen správce); na novém serveru hned, změna na stávajícím po restartu bota |
+| `/nastavit textovy hlasovy [seznam] [role] [pro_vsechny] [bez_seznamu]` | nastaví kino na serveru (jen správce), platí hned; když kino hraje, napíše, ať se počká |
 | `/pust film [od] [zvuk] [titulky]` | pustí film nebo díl, nebo odkaz na YouTube či Kick; `od` = `1:20:00`, `45` (minut) nebo `0` (od začátku) |
 | `/pauza`, `/pokracuj` | pozastaví / pustí dál |
 | `/posun cas` | `1:20:00` = na čas, `+5` / `-2` = o minuty, `+30s` = o sekundy |

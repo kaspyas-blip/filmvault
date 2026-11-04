@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { jsonFile } from './store.js';
 
 /**
  * Small choices a server's cinema remembers across restarts (<dir>/settings.json):
@@ -10,30 +10,17 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 const DEFAULTS = { sound: 'normal', skipIntro: [], summaryMonth: null };
 
 export function createSettings(dir) {
-  const file = `${dir}/settings.json`;
+  const file = jsonFile(`${dir}/settings.json`);
   let settings = null;
-  let writing = Promise.resolve();
 
   async function loadSettings() {
-    if (settings) return settings;
-    try {
-      settings = { ...DEFAULTS, ...JSON.parse(await readFile(file, 'utf8')) };
-    } catch (error) {
-      if (error.code !== 'ENOENT') console.error('Could not read settings:', error.message);
-      settings = { ...DEFAULTS };
-    }
+    settings ??= { ...DEFAULTS, ...await file.read() };
     return settings;
   }
 
   async function updateSettings(patch) {
     Object.assign(await loadSettings(), patch);
-    const data = JSON.stringify(settings, null, 1);
-    writing = writing.then(async () => {
-      await mkdir(dir, { recursive: true });
-      await writeFile(`${file}.tmp`, data);
-      await rename(`${file}.tmp`, file);
-    }).catch(error => console.error('Could not save settings:', error.message));
-    return writing;
+    return file.write(settings);
   }
 
   return { loadSettings, updateSettings };

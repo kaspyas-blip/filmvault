@@ -33,7 +33,8 @@ export function isLink(text) {
 export function isWebUrl(text) {
   if (!isLink(text)) return false;
   try {
-    return HOSTS.test(new URL(text.trim()).hostname);
+    const { protocol, hostname, username } = new URL(text.trim());
+    return protocol === 'https:' && !username && HOSTS.test(hostname);
   } catch {
     return false;
   }
@@ -71,14 +72,22 @@ function headerLines(format) {
 
 export async function webItem(url) {
   // --flat-playlist: without it a playlist or channel page loads every video it lists.
-  const output = await runYtDlp(['--no-playlist', '--flat-playlist', '--js-runtimes', 'node', '-f', FORMAT, '-J', '--', url.trim()], RESOLVE_TIMEOUT_MS).catch(error => {
+  // The address as parsed (not as written, parsers disagree on odd ones), and no generic
+  // extractor, which would follow a redirect from these sites to anywhere.
+  const address = new URL(url.trim()).href;
+  const output = await runYtDlp(['--no-playlist', '--flat-playlist', '--use-extractors', 'default,-generic', '--js-runtimes', 'node', '-f', FORMAT, '-J', '--', address], RESOLVE_TIMEOUT_MS).catch(error => {
     if (error.code === 'ENOENT') throw new UserError('Přehrávání z YouTube a Kicku tu není nainstalované (chybí yt-dlp).');
     console.warn(`yt-dlp failed for ${url}:`, error.message);
     throw new UserError(`Tohle video se nepodařilo načíst: ${error.message.replace(/^ERROR:\s*/, '').slice(0, 300)}`);
   });
-  const data = JSON.parse(output);
+  return itemFromYtDlp(JSON.parse(output), url);
+}
+
+/** data: what yt-dlp says about the page. */
+export function itemFromYtDlp(data, url) {
   if (data._type && data._type !== 'video') throw new UserError('Playlisty neumím, pošli odkaz na jedno video.');
   const formats = data.requested_formats ?? [data];
+  if (formats.some(f => !/^https:/.test(f.url ?? ''))) throw new UserError('Tohle video se nedá přehrát.');
   const video = formats.find(f => f.vcodec && f.vcodec !== 'none') ?? formats[0];
   // Not by its codec: HLS sound does not always name one.
   const audio = formats.find(f => f !== video);

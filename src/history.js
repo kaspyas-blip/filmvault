@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { jsonFile } from './store.js';
 
 // Statistics read the whole history, so it is kept long (a few hundred bytes each).
 const MAX_ENTRIES = 5000;
@@ -22,30 +22,21 @@ function mergeViewers(a = {}, b = {}) {
 
 /** The watch history of a server's cinema (<dir>/history.json). */
 export function createHistory(dir) {
-  const file = `${dir}/history.json`;
+  const file = jsonFile(`${dir}/history.json`);
   let entries = null;
-  let writing = Promise.resolve();
+  let loading = null;
 
-  async function load() {
-    if (entries) return entries;
-    try {
-      entries = JSON.parse(await readFile(file, 'utf8'));
-    } catch (error) {
-      if (error.code !== 'ENOENT') console.error('Could not read watch history:', error.message);
-      entries = [];
-    }
-    return entries;
+  // Two callers at once must share one list, or the second overwrites the first's entry.
+  function load() {
+    if (entries) return Promise.resolve(entries);
+    loading ??= file.read().then(saved => {
+      entries = saved ?? [];
+      return entries;
+    }).finally(() => { loading = null; });
+    return loading;
   }
 
-  function save() {
-    const data = JSON.stringify(entries, null, 1);
-    writing = writing.then(async () => {
-      await mkdir(dir, { recursive: true });
-      await writeFile(`${file}.tmp`, data);
-      await rename(`${file}.tmp`, file);
-    }).catch(error => console.error('Could not save watch history:', error.message));
-    return writing;
-  }
+  const save = () => file.write(entries);
 
   return {
     /** Newest first: { id, label, by, byId?, startedAt, endedAt, position, duration, finished, watched?, viewers?, manual? } */

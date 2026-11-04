@@ -25,6 +25,7 @@ import { createWishlist } from './wishlist.js';
 // The streaming account is on one call at a time, so one film plays across all servers.
 const BUSY = 'Kino teď promítá na jiném serveru, zkus to později.';
 const YTDLP_UPDATE_MS = 24 * 60 * 60_000;
+const CINEMA_RETRY_MS = 5 * 60_000;
 
 const ALONE_LEAVE_MS = 2 * 60_000;
 const ITEM_CACHE_MS = 60_000;
@@ -44,6 +45,7 @@ const WATCHED_TAIL = 0.92;
 const RESUME_MIN_SECONDS = 60;
 const RESUME_REWIND_SECONDS = 5;
 const DEFAULT_TRACKS = 'd';
+const LIVE_ENDED = /not currently live|is offline|has ended|not live/i;
 const BACKFILL_MESSAGES = 1000;
 const POSTER_FILE = 'poster.jpg';
 const AUTOPLAY_FILE = 'autoplay.json';
@@ -120,7 +122,9 @@ const setupCommand = new SlashCommandBuilder().setName('nastavit').setDescriptio
     .addChannelTypes(ChannelType.GuildVoice))
   .addChannelOption(o => o.setName('seznam').setDescription('Roomka „Chceme vidět“ (nepovinné)')
     .addChannelTypes(ChannelType.GuildText))
-  .addRoleOption(o => o.setName('role').setDescription('Jen tahle role smí ovládat kino (nepovinné, jinak všichni)'))
+  .addRoleOption(o => o.setName('role').setDescription('Jen tahle role smí ovládat kino (nepovinné, jinak zůstává jak je)'))
+  .addBooleanOption(o => o.setName('pro_vsechny').setDescription('Ovládat smí všichni, zruší omezení rolí'))
+  .addBooleanOption(o => o.setName('bez_seznamu').setDescription('Vypne roomku „Chceme vidět“'))
   .toJSON();
 
 // Matches a configured channel by ID, exact name, or a unique partial name (e.g. "🎬・film").
@@ -140,7 +144,7 @@ function findChannel(guild, wanted, isVoice) {
  * The cinema of one server: its channels, data and what it plays. All cinemas share
  * the player. busyElsewhere: () => whether another server's cinema holds it.
  */
-function createCinema({ client, player, guild, setup, busyElsewhere }) {
+export function createCinema({ client, player, guild, setup, busyElsewhere }) {
   const { textChannelId, voiceChannelId, wishlistChannelId, allowedRole, announceRole, dir } = setup;
   const guildId = guild.id;
   const nowPlayingFile = `${dir}/${NOW_PLAYING_FILE}`;
@@ -155,6 +159,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   let starting = 0; // playbacks being started (the subtitles can take a minute)
   let wishlist = null;
   let helpWishlistId = null; // the wishlist room once it runs, for the help
+  let stopHelp = null;
   const itemCache = new Map();
   const czechListCache = new Map();
   let genreCache = null;
@@ -182,6 +187,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const hit = itemCache.get(id);
     if (hit && hit.expires > Date.now()) return hit.item;
     const item = await loadItem(id);
+    for (const [key, entry] of itemCache) if (entry.expires <= Date.now()) itemCache.delete(key);
     itemCache.set(id, { item, expires: Date.now() + ITEM_CACHE_MS });
     return item;
   }
@@ -282,7 +288,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
           value: (player.audioTrack ? trackLabel(player.audioTrack) : item.web ? 'z videa' : '—') + (player.sound === 'night' ? ' · 🌙 vyrovnaný' : ''),
           inline: false,
         },
-        { name: 'Titulky', value: player.subtitleTrack ? trackLabel(player.subtitleTrack) : 'vypnuto', inline: false },
+        { name: 'Titulky', value: player.subtitleTrack ? trackLabel(player.subtitleTrack) : player.subtitleFailed ? '⚠️ nešly načíst, běží bez nich' : 'vypnuto', inline: false },
         { name: 'Kvalita', value: qualityLabel(player.quality), inline: false },
       );
     if (item.Overview) embed.setDescription(item.Overview.length > 300 ? `${item.Overview.slice(0, 299)}…` : item.Overview);
@@ -401,6 +407,14 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
       byId: current.requestedById ?? null,
       audioIndex: player.audioIndex,
       subtitleIndex: player.subtitleIndex,
+      skipNext: current.skipNext,
+      // For the history and the message, when it does not go on after the restart.
+      label: itemLabel(player.item),
+      startedAt: player.itemStartedAt,
+      duration: player.duration,
+      live: !!player.item.web?.live,
+      watched: watching?.watched ?? 0,
+      viewers: watching?.viewers ?? {},
       savedAt: Date.now(),
     };
     return onNowPlayingFile(async () => {
@@ -465,18 +479,31 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     await new Promise(resolve => setTimeout(resolve, RECOVERY_DELAYS_MS[attempts.length]));
     // Cancelled by /stop, /odejdi or everyone leaving; they retired the message.
     if (recovery !== token) return undefined;
-    recovery = null;
     // Someone started something else meanwhile: only the dead message goes.
-    if (playing() || nowPlaying !== current) return current?.message?.delete().catch(() => {});
-    if (!peopleInVoice()) return giveUp();
+    if (playing() || starting > 0 || nowPlaying !== current) {
+      recovery = null;
+      return current?.message?.delete().catch(() => {});
+    }
+    if (!peopleInVoice()) {
+      recovery = null;
+      return giveUp();
+    }
     try {
+      // Holds the player until the new start does: loading a web video takes seconds.
       const fresh = await loadItem(item.Id);
-      await beginPlayback(fresh, { startSeconds: Math.max(0, position - 5), tracks, byId: current?.requestedById },
+      if (recovery !== token) return undefined;
+      recovery = null;
+      await beginPlayback(fresh, { startSeconds: Math.max(0, position - 5), tracks, byId: current?.requestedById, skipNext: current?.skipNext },
         current?.requestedBy ?? 'FilmVault', payload => textChannel().send(payload),
         `⚠️ Vysílání spadlo, navázáno od ${formatTime(Math.max(0, position - 5))}.`);
+      // /stop came while it was getting ready: it does not come back after a restart either.
+      if (current && nowPlaying === current) return retireNowPlaying(item, '⏹ Zastaveno.');
       if (current?.message) await current.message.delete().catch(() => {});
     } catch (error) {
       console.error('Recovery failed:', error.message);
+      if (recovery === token) recovery = null;
+      // The streamer finished: nothing to go back to.
+      if (item.web?.live && LIVE_ENDED.test(error.message)) return retireMessage(current, item, '🔴 Přenos skončil.');
       // A half-started attempt (e.g. its message failed to send) is undone first.
       if (playing() && player.item.Id === item.Id) await player.stop().catch(() => {});
       nowPlaying = current;
@@ -587,16 +614,17 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     return last && !last.finished && last.position >= 60 ? Math.max(0, last.position - 5) : null;
   }
 
-  async function startItem(item, { startSeconds = null, zvuk = null, titulky = null, tracks = null, byId = null } = {}, requestedBy, send, note = '') {
+  async function startItem(item, { startSeconds = null, zvuk = null, titulky = null, tracks = null, byId = null, skipNext = false } = {}, requestedBy, send, note = '') {
     const source = mediaSource(item);
     const defaults = tracks ?? defaultTracks(source, zvuk && zvuk !== SUBTITLES_OFF ? Number(zvuk) : null);
     const resumedFrom = startSeconds === null ? (savesToJellyfin(item) ? resumeSeconds(item) : await historyResume(item)) : null;
     const previous = playing() ? player.item : null;
     const next = await findNextEpisode(item);
+    let started;
     try {
-      await player.play({
+      started = await player.play({
         autoSkipIntro: !!item.SeriesId && (await loadSettings()).skipIntro.includes(item.SeriesId),
-        countdown: next ? itemLabel(next) : null,
+        countdown: next && !skipNext ? itemLabel(next) : null,
         item,
         guildId,
         quality,
@@ -611,18 +639,34 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
       if (previous && !playing()) await retireNowPlaying(previous, '⏹ Zastaveno, nové přehrávání se nepodařilo spustit.');
       throw error;
     }
+    // /stop, /odejdi or a newer /pust came while this one was getting ready.
+    if (!started) {
+      await send({ content: '⏹ Tohle puštění bylo zrušeno.', embeds: [], components: [] }).catch(() => {});
+      return;
+    }
     if (previous) await retireNowPlaying(previous, 'Přepnuto na jiný film.');
 
     loadSegments(item, next);
     const poster = item.web ? null : await downloadPoster(item);
-    nowPlaying = { message: null, itemId: item.Id, requestedBy, requestedById: byId, resumedFrom, poster, next, skipNext: false };
+    if (player.item !== item) {
+      await send({ content: '⏹ Zastaveno dřív, než se to stihlo rozběhnout.', embeds: [], components: [] }).catch(() => {});
+      return;
+    }
+    nowPlaying = { message: null, itemId: item.Id, requestedBy, requestedById: byId, resumedFrom, poster, next, skipNext };
     const resumeNote = resumedFrom ? ` Navazuje od ${formatTime(resumedFrom)}, kde jste skončili.` : '';
-    nowPlaying.message = await send({
-      content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}${note ? `\n${note}` : ''}`,
-      embeds: [nowPlayingEmbed({ poster: poster && `attachment://${POSTER_FILE}` })],
-      components: controls(),
-      files: poster ? [new AttachmentBuilder(poster, { name: POSTER_FILE })] : [],
-    });
+    const current = nowPlaying;
+    try {
+      current.message = await send({
+        content: `🍿 Běží v <#${voiceChannelId}>. Připoj se a klikni na živé vysílání.${resumeNote}${note ? `\n${note}` : ''}`,
+        embeds: [nowPlayingEmbed({ poster: poster && `attachment://${POSTER_FILE}` })],
+        components: controls(),
+        files: poster ? [new AttachmentBuilder(poster, { name: POSTER_FILE })] : [],
+      });
+    } catch (error) {
+      // Playing with no message would leave nothing to control it with.
+      if (nowPlaying === current) await player.stop().catch(() => {});
+      throw error;
+    }
     await saveNowPlaying().catch(error => console.warn('Could not save now playing:', error.message));
     checkAlone();
   }
@@ -954,6 +998,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
       if (prefix === 'fh' && action === 'del') {
         await interaction.deferUpdate();
         const removed = await removeWatch(value);
+        if (removed) await wishlist?.restoreWish(removed);
         wishlist?.refresh();
         const notice = removed
           ? `🗑 Odebráno z historie: **${removed.label}** (${formatDate(removed.endedAt)})`
@@ -1054,7 +1099,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     return interaction.editReply({ embeds: [personEmbed(stats, key, member?.displayName ?? user.username, label)] });
   }
 
-  /** First of the month: last month's statistics in the cinema room, once. */
+  /** From the first of the month: last month's statistics in the cinema room, once. */
   async function postMonthlySummary() {
     const now = Date.now();
     const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
@@ -1062,7 +1107,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     }).formatToParts(new Date(now)).map(p => [p.type, p.value]));
     const month = `${parts.year}-${parts.month}`;
     const settings = await loadSettings();
-    if (Number(parts.day) !== 1 || Number(parts.hour) < SUMMARY_HOUR || settings.summaryMonth === month) return;
+    if (settings.summaryMonth === month || (Number(parts.day) === 1 && Number(parts.hour) < SUMMARY_HOUR)) return;
     const stats = await statsFor('minuly', now);
     // Marked done only once sent (or with nothing to send), so a failure retries next hour.
     if (stats.titles) await textChannel().send({ content: '📅 **Jak jsme koukali minulý měsíc**', embeds: [serverEmbed(stats, 'minulý měsíc')] });
@@ -1156,12 +1201,14 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
       case 'pauza':
         requireActive();
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        requireActive();
         await player.pause();
         await refreshNowPlaying();
         return interaction.editReply(`⏸ Pozastaveno na ${formatTime(player.position())}.`);
       case 'pokracuj':
         requireActive();
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        requireActive();
         await player.resume();
         await refreshNowPlaying();
         return interaction.editReply('▶ Pokračuje se.');
@@ -1199,6 +1246,12 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
         if (!playing() && cancelRecovery(`⏹ Zastaveno (${userName(interaction)}).`)) {
           return interaction.reply({ content: '⏹ Zastaveno, kino už se znovu nepustí.', flags: MessageFlags.Ephemeral });
         }
+        if (!playing() && starting > 0) {
+          // A full stop: between two episodes the stream stays open waiting for this start.
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          await player.stop().catch(() => {});
+          return interaction.editReply('⏹ Puštění zrušeno.');
+        }
         requireActive();
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const item = player.item;
@@ -1211,6 +1264,8 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
         if (busyElsewhere()) throw new UserError(BUSY);
         if (player.channelId && player.guildId !== guildId) throw new UserError('Kino teď v tomhle hovoru není.');
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        // Another server may have started during the answer above.
+        if (busyElsewhere()) throw new UserError(BUSY);
         player.guildId = guildId;
         const item = player.item;
         cancelRecovery('⏹ Zastaveno, odpojeno z hovoru.');
@@ -1324,20 +1379,27 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     },
   };
 
-  setInterval(countViewers, VIEWER_TICK_MS).unref();
-  setInterval(() => {
+  const timers = [];
+  function every(task, ms) {
+    const timer = setInterval(task, ms);
+    timer.unref();
+    timers.push(timer);
+  }
+
+  every(countViewers, VIEWER_TICK_MS);
+  every(() => {
     if (playing()) saveNowPlaying().catch(error => console.warn('Could not save now playing:', error.message));
-  }, NOW_PLAYING_SAVE_MS).unref();
+  }, NOW_PLAYING_SAVE_MS);
 
   // Keep the resume position fresh in case the MiniPC or bot dies mid-film.
   let lastSaved = null;
-  setInterval(() => {
+  every(() => {
     if (!playing() || player.paused || !savesToJellyfin(player.item)) return;
     const position = player.position();
     if (position < 60 || lastSaved === Math.round(position)) return;
     lastSaved = Math.round(position);
     saveProgress(player.item.Id, { seconds: position }).catch(error => console.error('Saving progress failed:', error.message));
-  }, PROGRESS_SAVE_MS).unref();
+  }, PROGRESS_SAVE_MS);
 
   async function handleInteraction(interaction) {
     if (interaction.isAutocomplete()) {
@@ -1432,13 +1494,13 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     }
   }
 
-  /** A JSON file younger than AUTOPLAY_MAX_AGE_MS, read once and deleted; null otherwise. */
+  /** A JSON file read once and deleted, with fresh: younger than AUTOPLAY_MAX_AGE_MS; null when there is none. */
   async function takeFile(path) {
     try {
       const { mtimeMs } = await stat(path);
-      const data = Date.now() - mtimeMs < AUTOPLAY_MAX_AGE_MS ? JSON.parse(await readFile(path, 'utf8')) : null;
+      const data = JSON.parse(await readFile(path, 'utf8'));
       await rm(path, { force: true });
-      return data;
+      return { data, fresh: Date.now() - mtimeMs < AUTOPLAY_MAX_AGE_MS };
     } catch (error) {
       if (error.code !== 'ENOENT') console.error(`${path} unreadable:`, error.message);
       return null;
@@ -1452,54 +1514,104 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
    * script) is the fallback; it resumes from Jellyfin's saved position.
    */
   async function playAfterRestart() {
-    const state = await takeFile(nowPlayingFile);
-    const request = await takeFile(`${dir}/${AUTOPLAY_FILE}`);
-    await deleteDeadMessages();
-    const itemId = state?.itemId ?? request?.itemId;
-    if (!itemId) return;
+    const saved = await takeFile(nowPlayingFile);
+    const state = saved?.data ?? null;
+    const taken = await takeFile(`${dir}/${AUTOPLAY_FILE}`);
+    const request = taken?.fresh ? taken.data : null;
+    await deleteDeadMessages(state?.messageId);
+    const fresh = saved?.fresh ? state : null;
+    // Too old to go on by itself: what played still counts, and its message offers to go on later.
+    if (state && !fresh) await closeInterrupted(state, '⏹ Přerušeno, kino bylo dlouho vypnuté.');
+    const itemId = fresh?.itemId ?? request?.itemId;
+    const notResuming = reason => (fresh ? closeInterrupted(fresh, reason) : undefined);
+    if (!itemId) return undefined;
     // Another server went on with its film (the deploy script's autoplay is for the first server).
     if (busyElsewhere()) {
       console.log('Not resuming after restart: the cinema plays on another server');
-      return;
+      return notResuming('⏹ Přerušeno restartem kina.');
     }
     if (!peopleInVoice()) {
       console.log('Not resuming after restart: nobody in the voice room');
-      return;
+      return notResuming('⏹ Přerušeno restartem kina, v hovoru nikdo nebyl.');
     }
     try {
       const item = await loadItem(itemId);
       console.log(`Playing ${itemLabel(item)} again after restart`);
       const send = payload => textChannel().send(payload);
-      if (state) {
+      if (fresh) {
         const startSeconds = Math.max(0, state.position - 5);
         await beginPlayback(item, {
-          startSeconds, tracks: { audioIndex: state.audioIndex, subtitleIndex: state.subtitleIndex }, byId: state.byId,
+          startSeconds, tracks: { audioIndex: state.audioIndex, subtitleIndex: state.subtitleIndex }, byId: state.byId, skipNext: state.skipNext,
         }, state.by ?? 'FilmVault', send, `🔄 Kino se restartovalo, navázáno od ${formatTime(startSeconds)}.`);
+        await textChannel().messages.delete(state.messageId).catch(() => {});
       } else {
         await beginPlayback(item, {}, request.by ?? 'restart', send);
       }
     } catch (error) {
       console.error('Autoplay after restart failed:', error);
+      return notResuming('⏹ Přerušeno restartem kina, nepodařilo se navázat.');
     }
+    return undefined;
+  }
+
+  /** What was playing when the bot went down, and will not go on by itself. */
+  async function closeInterrupted(state, text) {
+    if (state.label) {
+      const tail = state.duration && state.position >= state.duration * WATCHED_TAIL;
+      await recordWatch({
+        id: state.itemId,
+        label: state.label,
+        by: state.by,
+        byId: state.byId,
+        startedAt: state.startedAt ?? state.savedAt,
+        position: state.position,
+        duration: state.duration,
+        finished: !!tail || state.live,
+        watched: state.watched,
+        viewers: state.viewers,
+      });
+    }
+    const message = await textChannel().messages.fetch(state.messageId).catch(() => null);
+    if (!message) return;
+    const title = state.label ?? message.embeds[0]?.title;
+    await message.edit({
+      content: '',
+      embeds: title ? [new EmbedBuilder().setColor(0x4e5058).setTitle(title).setDescription(text)] : [],
+      components: resumeRow(state.itemId, state.position, state.audioIndex, state.subtitleIndex, state.live),
+      attachments: [],
+    }).catch(() => {});
   }
 
   async function start() {
     const text = client.channels.cache.get(textChannelId);
     const voice = client.channels.cache.get(voiceChannelId);
-    if (!text || !voice) throw new Error(`Channels of ${guild.name} not found`);
+    if (!text || !voice) throw new Error(`Channels of ${guild.name} not found, /nastavit sets new ones`);
     quality = await loadQuality();
     sound = (await loadSettings()).sound;
     await guild.commands.set([...commands, setupCommand]);
     console.log(`Registered ${commands.length + 1} slash commands in ${guild.name}; text #${text.name}, voice ${voice.name}`);
     helpWishlistId = await startWishlist();
-    await keepHelpLast(client, text, voice.id, helpWishlistId, allowedRole).catch(error => console.error('Help message failed:', error.message));
+    stopHelp = await keepHelpLast(client, text, voice.id, helpWishlistId, allowedRole).catch(error => {
+      console.error('Help message failed:', error.message);
+      return null;
+    });
     await playAfterRestart();
     backfillResumeButtons().catch(error => console.error('Adding go-on buttons failed:', error.message));
-    setInterval(() => postMonthlySummary().catch(error => console.error('Monthly summary failed:', error)), SUMMARY_CHECK_MS).unref();
+    every(() => postMonthlySummary().catch(error => console.error('Monthly summary failed:', error)), SUMMARY_CHECK_MS);
     postMonthlySummary().catch(error => console.error('Monthly summary failed:', error));
   }
 
-  return { start, busy, handleInteraction, checkAlone, onPlayer };
+  /** The cinema goes away (the bot left the server, or it gets new channels). */
+  async function close() {
+    for (const timer of timers) clearInterval(timer);
+    clearTimeout(aloneTimer);
+    wishlist?.stop();
+    stopHelp?.();
+    recovery = null;
+    if (player.guildId === guildId && (player.channelId || player.active)) await player.leave().catch(() => {});
+  }
+
+  return { start, close, busy, handleInteraction, checkAlone, onPlayer };
 }
 
 export function startBot(player) {
@@ -1513,7 +1625,7 @@ export function startBot(player) {
   const cinemas = new Map(); // server ID -> cinema
   let setups = {};
 
-  function startCinema(guild, setup) {
+  function addCinema(guild, setup) {
     const cinema = createCinema({
       client,
       player,
@@ -1522,7 +1634,30 @@ export function startBot(player) {
       busyElsewhere: () => [...cinemas.values()].some(other => other !== cinema && other.busy()),
     });
     cinemas.set(guild.id, cinema);
-    return cinema.start();
+    return cinema;
+  }
+
+  /**
+   * One server's trouble stays there: the others run, /nastavit stays usable, and a
+   * failed start (Discord or Jellyfin down) is tried again.
+   */
+  async function startCinema(guild, cinema) {
+    try {
+      await cinema.start();
+    } catch (error) {
+      console.error(`Cinema of ${guild.name} failed to start:`, error.message);
+      if (cinemas.get(guild.id) === cinema) cinemas.delete(guild.id);
+      await cinema.close().catch(() => {});
+      await guild.commands.set([setupCommand]).catch(setError => console.error(`Commands of ${guild.name}:`, setError.message));
+      const retry = setTimeout(() => {
+        const setup = setups[guild.id];
+        if (setup && !cinemas.has(guild.id)) {
+          guild.channels.fetch().then(() => startCinema(guild, addCinema(guild, setup))).catch(fetchError => console.error(`Retrying ${guild.name}:`, fetchError.message));
+        }
+      }, CINEMA_RETRY_MS);
+      retry.unref();
+      throw error;
+    }
   }
 
   /** From before there were several servers: .env names the channels of the first one. */
@@ -1534,6 +1669,17 @@ export function startBot(player) {
     }
     const guild = await client.guilds.fetch(id);
     await guild.channels.fetch();
+    const channel = (wanted, isVoice) => {
+      try {
+        return findChannel(guild, wanted, isVoice).id;
+      } catch (error) {
+        console.error(`${guild.name}: ${error.message}. Use /nastavit.`);
+        return null;
+      }
+    };
+    const textChannelId = channel(config.textChannel, false);
+    const voiceChannelId = channel(config.voiceChannel, true);
+    if (!textChannelId || !voiceChannelId) return;
     let wishlistChannelId = null;
     try {
       wishlistChannelId = findChannel(guild, config.wishlistChannel, false).id;
@@ -1541,8 +1687,8 @@ export function startBot(player) {
       console.error('Wishlist room:', error.message);
     }
     setups[id] = {
-      textChannelId: findChannel(guild, config.textChannel, false).id,
-      voiceChannelId: findChannel(guild, config.voiceChannel, true).id,
+      textChannelId,
+      voiceChannelId,
       wishlistChannelId,
       allowedRole: config.allowedRole,
       announceRole: config.announceRole,
@@ -1558,11 +1704,14 @@ export function startBot(player) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const id = interaction.guildId;
     const old = setups[id];
+    const running = cinemas.get(id);
+    if (running?.busy()) return interaction.editReply('Kino teď na tomhle serveru hraje. Změň nastavení, až dohraje nebo po /stop.');
+    const { options } = interaction;
     setups[id] = {
-      textChannelId: interaction.options.getChannel('textovy', true).id,
-      voiceChannelId: interaction.options.getChannel('hlasovy', true).id,
-      wishlistChannelId: interaction.options.getChannel('seznam')?.id ?? old?.wishlistChannelId ?? null,
-      allowedRole: interaction.options.getRole('role')?.id ?? old?.allowedRole ?? null,
+      textChannelId: options.getChannel('textovy', true).id,
+      voiceChannelId: options.getChannel('hlasovy', true).id,
+      wishlistChannelId: options.getBoolean('bez_seznamu') ? null : options.getChannel('seznam')?.id ?? old?.wishlistChannelId ?? null,
+      allowedRole: options.getBoolean('pro_vsechny') ? null : options.getRole('role')?.id ?? old?.allowedRole ?? null,
       announceRole: old?.announceRole ?? null,
       dir: old?.dir ?? `data/guilds/${id}`,
     };
@@ -1571,14 +1720,14 @@ export function startBot(player) {
     if (!player.streamer.client.guilds.cache.has(id)) {
       notes.push('⚠️ Streamovací účet na tomhle serveru není. Pozvi ho, a musí vidět hlasový kanál, jinak se film nepustí.');
     }
-    if (cinemas.has(id)) {
-      notes.unshift('✅ Uloženo. Projeví se po příštím restartu bota.');
-    } else {
-      const guild = await client.guilds.fetch(id);
-      await guild.channels.fetch();
-      await startCinema(guild, setups[id]);
-      notes.unshift('✅ Kino je nastavené, návod najdeš v textovém kanálu.');
+    if (running) {
+      cinemas.delete(id);
+      await running.close();
     }
+    const guild = await client.guilds.fetch(id);
+    await guild.channels.fetch();
+    await startCinema(guild, addCinema(guild, setups[id]));
+    notes.unshift('✅ Kino je nastavené, návod najdeš v textovém kanálu.');
     return interaction.editReply(notes.join('\n'));
   }
 
@@ -1606,13 +1755,22 @@ export function startBot(player) {
     return undefined;
   });
 
-  // Invited to a new server: it can be set up right away.
+  // Invited to a new server: it can be set up right away. Back on an old one: it goes on.
   client.on('guildCreate', guild => {
     const setup = setups[guild.id];
-    const started = !setup || cinemas.has(guild.id)
-      ? guild.commands.set([setupCommand])
-      : guild.channels.fetch().then(() => startCinema(guild, setup));
-    started.catch(error => console.error(`Setting up ${guild.name} failed:`, error));
+    const started = setup
+      ? guild.channels.fetch().then(() => startCinema(guild, addCinema(guild, setup)))
+      : guild.commands.set([setupCommand]);
+    started.catch(error => console.error(`Setting up ${guild.name} failed:`, error.message));
+  });
+
+  // Thrown out of a server: its film ends, or other servers would hear "plays elsewhere" for hours.
+  client.on('guildDelete', guild => {
+    const cinema = cinemas.get(guild.id);
+    if (!cinema) return;
+    console.warn(`The bot left ${guild.name}, its cinema stops`);
+    cinemas.delete(guild.id);
+    cinema.close().catch(error => console.error(`Closing ${guild.name} failed:`, error.message));
   });
 
   client.once('clientReady', async () => {
@@ -1627,29 +1785,28 @@ export function startBot(player) {
           console.warn(`Bot is no longer on server ${id}, its cinema stays off`);
           continue;
         }
-        const guild = await client.guilds.fetch(id);
-        await guild.channels.fetch();
-        // A call the account was left in before the restart (or a Discord outage) blocks the next join.
-        player.guildId = id;
-        if (player.streamer.client.guilds.cache.has(id)) player.leaveVoice();
-        ready.push([guild, setup]);
+        try {
+          const guild = await client.guilds.fetch(id);
+          await guild.channels.fetch();
+          // A call the account was left in before the restart (or a Discord outage) blocks the next join.
+          player.guildId = id;
+          if (player.streamer.client.guilds.cache.has(id)) player.leaveVoice();
+          ready.push([guild, setup]);
+        } catch (error) {
+          console.error(`Server ${id} cannot be loaded:`, error.message);
+        }
       }
+      // All known before any starts, so that /nastavit meanwhile does not make a second one.
       // The first server last: it takes the deploy script's autoplay, which is only for
       // when no other server has gone on with what it played.
       ready.sort(([, a], [, b]) => (a.dir === 'data') - (b.dir === 'data'));
-      let started = 0;
-      for (const [guild, setup] of ready) {
-        try {
-          await startCinema(guild, setup);
-          started++;
-        } catch (error) {
-          console.error(`Cinema of ${guild.name} failed to start:`, error);
-        }
-      }
-      if (ready.length && !started) throw new Error('No cinema started');
+      const added = ready.map(([guild, setup]) => [guild, addCinema(guild, setup)]);
+      // Not one that /nastavit replaced meanwhile.
+      for (const [guild, cinema] of added) if (cinemas.get(guild.id) === cinema) await startCinema(guild, cinema).catch(() => {});
       for (const { id, name } of guilds.values()) {
         if (!setups[id]) {
-          await client.guilds.fetch(id).then(guild => guild.commands.set([setupCommand]));
+          await client.guilds.fetch(id).then(guild => guild.commands.set([setupCommand]))
+            .catch(error => console.error(`Commands of ${name}:`, error.message));
           console.log(`Server ${name} has no cinema yet: /nastavit`);
         }
       }

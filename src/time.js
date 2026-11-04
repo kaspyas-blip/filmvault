@@ -21,7 +21,7 @@ export function parseTime(text) {
   let seconds;
   if (body.includes(':')) {
     const parts = body.split(':').map(Number);
-    if (parts.length > 3 || parts.some(p => !Number.isFinite(p) || p < 0)) return null;
+    if (parts.length > 3 || parts.some(p => !Number.isFinite(p) || p < 0) || parts.slice(1).some(p => p >= 60)) return null;
     seconds = parts.reduce((acc, part) => acc * 60 + part, 0);
   } else {
     const unitMatch = /^(\d+(?:\.\d+)?)(s|m|min|h|hod)?$/.exec(body);

@@ -132,7 +132,8 @@ export function isCzech(stream) {
 export function defaultTracks(source, audioIndex = null) {
   const audio = audioTracks(source);
   const subs = subtitleTracks(source);
-  const chosen = audio.find(t => t.Index === audioIndex) ?? audio.find(isCzech) ?? audio.find(t => t.IsDefault) ?? audio[0];
+  const dub = t => isCzech(t) && !/koment|comment/i.test(t.Title ?? '');
+  const chosen = audio.find(t => t.Index === audioIndex) ?? audio.find(dub) ?? audio.find(t => t.IsDefault) ?? audio[0];
   const czechSubs = subs.filter(t => isCzech(t) && (t.IsTextSubtitleStream || !t.IsExternal));
   const subtitle = chosen && isCzech(chosen)
     ? czechSubs.find(t => t.IsForced)

@@ -164,8 +164,13 @@ export async function keepHelpLast(client, channel, voiceChannelId, wishlistChan
       reposting = reposting.then(repost).catch(error => console.error('Help message repost failed:', error.message));
     }, REPOST_DELAY_MS);
   };
-  client.on('messageCreate', message => {
+  const onMessage = message => {
     if (message.channelId === channel.id && message.id !== current?.id) schedule();
-  });
+  };
+  client.on('messageCreate', onMessage);
   if (!current) await repost();
+  return () => {
+    client.off('messageCreate', onMessage);
+    clearTimeout(timer);
+  };
 }

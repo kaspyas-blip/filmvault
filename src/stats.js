@@ -8,6 +8,7 @@ const SITTING_GAP_MS = 30 * 60_000;
 // A night out ends at 6 in the morning: what ends at 1:30 belongs to the evening before.
 const DAY_STARTS_HOUR = 6;
 const META_CACHE_MS = 60 * 60_000;
+const VIEWER_MIN_SHARE = 0.5;
 const MEDALS = ['🥇', '🥈', '🥉', '4.', '5.'];
 const WEEKDAYS = ['v neděli', 'v pondělí', 'v úterý', 've středu', 've čtvrtek', 'v pátek', 'v sobotu'];
 // Restarts and recoveries start titles in the bot's own name; they are nobody's.
@@ -164,7 +165,8 @@ export async function computeStats({ entries, wishes, from = 0, to = Infinity })
     const seriesName = isEpisode ? item?.SeriesName ?? entry.label.replace(/\s+S\d{2}E\d{2}.*$/, '') : null;
     if (seriesName) stats.series.set(seriesName, (stats.series.get(seriesName) ?? 0) + 1);
     if (!entry.manual) for (const genre of genres) stats.genres.set(genre, (stats.genres.get(genre) ?? 0) + seconds);
-    stats.replays.set(entry.label, (stats.replays.get(entry.label) ?? new Set()).add(eveningOf(entry.startedAt)));
+    // Only played to the end: a film resumed the next evening is not a repeat.
+    if (entry.finished) stats.replays.set(entry.label, (stats.replays.get(entry.label) ?? new Set()).add(eveningOf(entry.startedAt)));
 
     if (!BOT_NAME.test(entry.by ?? '') || entry.byId) {
       const starter = personKey(entry.byId, entry.by);
@@ -183,7 +185,8 @@ export async function computeStats({ entries, wishes, from = 0, to = Infinity })
       stats.viewerTitles.set(key, (stats.viewerTitles.get(key) ?? 0) + 1);
       const p = person(key);
       p.seconds += viewer.seconds;
-      if (entry.finished && !isWeb) isEpisode ? p.episodes++ : p.films++;
+      // Seen it: there for at least half of what was played, not just passing through.
+      if (entry.finished && !isWeb && viewer.seconds >= seconds * VIEWER_MIN_SHARE) isEpisode ? p.episodes++ : p.films++;
       if (end.hour >= 2 && end.hour < DAY_STARTS_HOUR) p.nightOwl = true;
       for (const genre of genres) p.genres.set(genre, (p.genres.get(genre) ?? 0) + viewer.seconds);
       if (seriesName) p.series.set(seriesName, (p.series.get(seriesName) ?? 0) + 1);

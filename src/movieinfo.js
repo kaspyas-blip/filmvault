@@ -85,8 +85,8 @@ const byVotes = (a, b) => b.votes - a.votes;
 export async function findMovie(text) {
   const { title, year } = parseQuery(text);
   // Only the results closest to what was written: "kryci jmeni zohan" keeps Zohan, not Krycí jméno U.N.C.L.E.
-  const search = async (query, language, wanted = title) => {
-    const data = await tmdb('/search/movie', { query, language, include_adult: false, primary_release_year: year ?? undefined });
+  const search = async (query, language, wanted = title, releaseYear = year) => {
+    const data = await tmdb('/search/movie', { query, language, include_adult: false, primary_release_year: releaseYear ?? undefined });
     const scored = (data.results ?? []).map(r => ({
       ...brief(r), score: Math.max(titleSimilarity(wanted, r.title), titleSimilarity(wanted, r.original_title)),
     }));
@@ -99,6 +99,8 @@ export async function findMovie(text) {
   let results = await search(title, 'cs-CZ');
   if (!results.length) results = await search(title, 'en-US');
   if (!results.length && longest?.length >= 4 && longest !== normalizeTitle(title)) results = await search(longest, 'cs-CZ');
+  // The "year" may be part of the title: Blade Runner 2049.
+  if (!results.length && year) results = await search(`${title} ${year}`, 'cs-CZ', `${title} ${year}`, null);
   // A sequel without its number in the title ("Mizerové 3" is Mizerové navždy): offer the series.
   const series = /^(.+?)\s+\d{1,2}$/.exec(title)?.[1];
   if (!results.length && series) {

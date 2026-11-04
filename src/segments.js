@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { config } from './config.js';
 import { authHeader, durationSeconds, itemLabel, listEpisodes, mediaSource, streamUrl } from './jellyfin.js';
+import { jsonFile } from './store.js';
 
 /**
  * Finds the intro and the end credits of an episode the way Jellyfin's Intro Skipper
@@ -10,7 +10,6 @@ import { authHeader, durationSeconds, itemLabel, listEpisodes, mediaSource, stre
  * point per ~0.124 s; the longest stretch where two episodes' points (nearly) agree
  * at a fixed offset is the shared part. Results are kept in data/segments.json.
  */
-const FILE = 'data/segments.json';
 const VERSION = 3;
 const POINT_SECONDS = 4096 / 11025 / 3;
 // The intro is looked for in the first 10 minutes (at most 40 % of the episode),
@@ -36,32 +35,18 @@ const LIT_BEFORE_SECONDS = 3;
 const LIT_PERCENT = 70;
 
 let store = null;
-let writing = Promise.resolve();
+const file = jsonFile('data/segments.json');
 // One analysis at a time, so the MiniPC's disk and CPU stay free for the stream.
 let queue = Promise.resolve();
 const pending = new Map();
 const prints = new Map();
 
 async function load() {
-  if (store) return store;
-  try {
-    store = JSON.parse(await readFile(FILE, 'utf8'));
-  } catch (error) {
-    if (error.code !== 'ENOENT') console.error('Could not read segments:', error.message);
-    store = {};
-  }
+  store ??= (await file.read()) ?? {};
   return store;
 }
 
-function save() {
-  const data = JSON.stringify(store);
-  writing = writing.then(async () => {
-    await mkdir('data', { recursive: true });
-    await writeFile(`${FILE}.tmp`, data);
-    await rename(`${FILE}.tmp`, FILE);
-  }).catch(error => console.error('Could not save segments:', error.message));
-  return writing;
-}
+const save = () => file.write(store);
 
 /** Audio fingerprint of `length` seconds from `start`, as uint32 points. */
 function fingerprint(item, start, length) {
@@ -247,7 +232,7 @@ async function analyse(item) {
   const index = episodes.findIndex(e => e.Id === item.Id);
   // The next episode first, the previous one when there is no next (or no match).
   const neighbours = [episodes[index + 1], episodes[index - 1]].filter(Boolean);
-  const result = { v: VERSION, intro: null, credits: null, at: Date.now() };
+  const result = { v: VERSION, intro: null, credits: null, at: Date.now(), ticks: item.RunTimeTicks ?? null };
   // A step that failed (Jellyfin or ffmpeg hiccup) leaves the result unsaved, so the
   // episode is analysed again next time instead of keeping "nothing found".
   let failed = false;
@@ -269,6 +254,8 @@ async function analyse(item) {
 /** What is known already for this episode, or undefined. */
 export async function knownSegments(item) {
   const entry = (await load())[item.Id];
+  // A replaced file (other length) has other cut times.
+  if (entry?.ticks && item.RunTimeTicks && entry.ticks !== item.RunTimeTicks) return undefined;
   return entry?.v === VERSION ? entry : undefined;
 }
 

@@ -1,10 +1,10 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, StringSelectMenuBuilder,
   TextInputBuilder, TextInputStyle,
 } from 'discord.js';
 import { durationSeconds, getItem, listLibrary, saveProgress } from './jellyfin.js';
 import { findMovie, imdbUrl, movieDetails, normalizeTitle, titleSimilarity, tmdbUrl } from './movieinfo.js';
+import { jsonFile } from './store.js';
 import { formatTime } from './time.js';
 
 /**
@@ -32,6 +32,7 @@ const NICKNAME_CACHE_MS = 10 * 60_000;
 const ARRIVALS_QUIET_MS = 10 * 60_000;
 const ARRIVALS_PLAY_OPTIONS = 25;
 const MAX_EMBEDS = 10;
+const EDIT_MENUS = 4;
 
 function formatDate(ms) {
   return new Date(ms).toLocaleDateString('cs-CZ', { timeZone: 'Europe/Prague', day: 'numeric', month: 'numeric', year: 'numeric' });
@@ -58,9 +59,10 @@ export function titlesIn(text) {
  * jellyfinProgress: this server's watched marks go to Jellyfin too.
  */
 export function createWishlist({ client, channelId, allowed, userName, play, dir, addWatch, history, announceRole: announceRoleName = null, jellyfinProgress = true }) {
-  const FILE = `${dir}/wishlist.json`;
+  const file = jsonFile(`${dir}/wishlist.json`);
   let state = null; // { listMessageId, imported, films, done, knownMovies, arrivals }
-  let writing = Promise.resolve();
+  let loading = null;
+  let refreshInterval = null;
   let library = null; // { expires, byImdb, byTmdb, byTitle }
   let refreshTimer = null;
   let refreshing = Promise.resolve();
@@ -69,26 +71,17 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
 
   const channel = () => client.channels.cache.get(channelId);
 
-  async function load() {
-    if (state) return state;
-    try {
-      state = JSON.parse(await readFile(FILE, 'utf8'));
-    } catch (error) {
-      if (error.code !== 'ENOENT') console.error('Could not read wishlist:', error.message);
-      state = { listMessageId: null, imported: false, films: [] };
-    }
-    return state;
+  // Everyone shares one object, or the second to load would overwrite the first's changes.
+  function load() {
+    if (state) return Promise.resolve(state);
+    loading ??= file.read().then(saved => {
+      state = saved ?? { listMessageId: null, imported: false, films: [] };
+      return state;
+    }).finally(() => { loading = null; });
+    return loading;
   }
 
-  function save() {
-    const data = JSON.stringify(state, null, 1);
-    writing = writing.then(async () => {
-      await mkdir(dir, { recursive: true });
-      await writeFile(`${FILE}.tmp`, data);
-      await rename(`${FILE}.tmp`, FILE);
-    }).catch(error => console.error('Could not save wishlist:', error.message));
-    return writing;
-  }
+  const save = () => file.write(state);
 
   // ---- Jellyfin matching ----------------------------------------------------
 
@@ -101,7 +94,8 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
       if (ids.Imdb) index.byImdb.set(ids.Imdb, item);
       if (ids.Tmdb) index.byTmdb.set(String(ids.Tmdb), item);
       for (const name of [item.Name, item.OriginalTitle]) {
-        if (name) index.byTitle.set(`${normalizeTitle(name)}|${item.ProductionYear ?? ''}`, item);
+        // A title in another script normalizes to nothing and would match any film of that year.
+        if (normalizeTitle(name)) index.byTitle.set(`${normalizeTitle(name)}|${item.ProductionYear ?? ''}`, item);
       }
     }
     library = index;
@@ -112,18 +106,22 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
     const index = await libraryIndex();
     return (film.imdbId && index.byImdb.get(film.imdbId))
       ?? index.byTmdb.get(String(film.tmdbId))
-      ?? [film.title, film.originalTitle].map(t => index.byTitle.get(`${normalizeTitle(t)}|${film.year ?? ''}`)).find(Boolean)
+      ?? [film.title, film.originalTitle].filter(t => normalizeTitle(t)).map(t => index.byTitle.get(`${normalizeTitle(t)}|${film.year ?? ''}`)).find(Boolean)
       ?? looseMatch(index.items, film);
   }
 
   /**
    * Films Jellyfin never identified have no IMDb/TMDB IDs and often a file-like name
-   * ("Dannyho parťáci 1"): same year and every word of the title is enough.
+   * ("Dannyho parťáci 1"): same year and every word of the title is enough. An identified
+   * film would have matched by its ID, and another number is another film ("Scream 2").
    */
   function looseMatch(items, film) {
     if (!film.year) return null;
-    return items.find(item => Math.abs((item.ProductionYear ?? 0) - film.year) <= 1
-      && [film.title, film.originalTitle].some(title => title && [item.Name, item.OriginalTitle].some(name => titleSimilarity(title, name) === 1)))
+    const numbers = name => normalizeTitle(name).split(' ').filter(word => /^\d+$/.test(word) && word !== '1').join();
+    const same = (title, name) => title && name && titleSimilarity(title, name) === 1 && numbers(title) === numbers(name);
+    return items.find(item => !item.ProviderIds?.Tmdb && !item.ProviderIds?.Imdb
+      && Math.abs((item.ProductionYear ?? 0) - film.year) <= 1
+      && [film.title, film.originalTitle].some(title => [item.Name, item.OriginalTitle].some(name => same(title, name))))
       ?? null;
   }
 
@@ -200,13 +198,15 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
         by: await adderName(film),
       });
     }
-    if (done.length) {
+    // Still on the list: a second look running alongside this one may have moved them already.
+    const moved = done.filter(f => list.films.some(open => open.tmdbId === f.tmdbId));
+    if (moved.length) {
       // Kept for the statistics (whose wishes came true).
-      list.done = [...(list.done ?? []), ...done];
-      const doneIds = new Set(done.map(f => f.tmdbId));
+      list.done = [...(list.done ?? []), ...moved];
+      const doneIds = new Set(moved.map(f => f.tmdbId));
       list.films = list.films.filter(f => !doneIds.has(f.tmdbId));
       await save();
-      console.log(`Wishlist: removed watched ${done.map(f => f.title).join(', ')}`);
+      console.log(`Wishlist: removed watched ${moved.map(f => f.title).join(', ')}`);
     }
     return rows;
   }
@@ -275,16 +275,17 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
     ].filter(Boolean).join('\n');
     const menu = new StringSelectMenuBuilder().setCustomId('fw:playnew').setPlaceholder('▶ Pustit některý z nich…')
       .addOptions(sorted.slice(0, ARRIVALS_PLAY_OPTIONS).map(item => ({ label: itemTitle(item).slice(0, 100), value: item.Id })));
-    // A message holds at most 10 embeds; only a huge first import would be cut short.
-    await channel().send({
-      content,
-      embeds: chunks.slice(0, MAX_EMBEDS).map((lines, i) => new EmbedBuilder()
-        .setColor(0x57f287)
-        .setTitle(i ? null : `🆕 Nově v Jellyfinu (${n})`)
-        .setDescription(lines.join('\n'))),
-      components: [new ActionRowBuilder().addComponents(menu)],
-      allowedMentions: { roles: role ? [role.id] : [], users: wishedIds },
-    });
+    // A message holds 6000 characters in all, so a big batch takes several; only a huge
+    // first import would be cut short.
+    const embeds = chunks.slice(0, MAX_EMBEDS).map((lines, i) => new EmbedBuilder()
+      .setColor(0x57f287)
+      .setTitle(i ? null : `🆕 Nově v Jellyfinu (${n})`)
+      .setDescription(lines.join('\n')));
+    for (const [i, embed] of embeds.entries()) {
+      await channel().send(i
+        ? { embeds: [embed], allowedMentions: { parse: [] } }
+        : { content, embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)], allowedMentions: { roles: role ? [role.id] : [], users: wishedIds } });
+    }
     console.log(`Announced ${n} new film(s): ${sorted.map(i => i.Name).join(', ')}`);
   }
 
@@ -363,10 +364,14 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
     const components = [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('fw:roll').setLabel('🎲 Hodit kostkou').setStyle(ButtonStyle.Primary).setDisabled(!available),
     )];
-    if (rows.length) {
+    // A menu holds 25 and a message 5 rows, so up to 100 films can be edited.
+    const pages = [];
+    for (let i = 0; i < sorted.length && pages.length < EDIT_MENUS; i += 25) pages.push(sorted.slice(i, i + 25));
+    for (const [i, page] of pages.entries()) {
+      const range = pages.length > 1 ? ` (${page[0].film.title.slice(0, 12)} – ${page.at(-1).film.title.slice(0, 12)})` : '';
       components.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
-        .setCustomId('fw:edit').setPlaceholder('✏️ Upravit nebo odebrat…')
-        .addOptions(sorted.slice(0, 25).map(({ film }) => ({ label: filmLabel(film).slice(0, 100), value: String(film.tmdbId) })))));
+        .setCustomId(`fw:edit:${i}`).setPlaceholder(`✏️ Upravit nebo odebrat…${range}`)
+        .addOptions(page.map(({ film }) => ({ label: filmLabel(film).slice(0, 100), value: String(film.tmdbId) })))));
     }
     return { embeds: [embed], components };
   }
@@ -431,9 +436,10 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
   /** adder: { name, id } of whoever added it. */
   async function addFilm(tmdbId, adder) {
     const list = await load();
-    const existing = list.films.find(f => f.tmdbId === tmdbId);
     const details = await movieDetails(tmdbId);
-    const film = existing ?? {
+    // Someone else may have added it during the lookup.
+    const added = list.films.find(f => f.tmdbId === tmdbId);
+    const film = added ?? {
       tmdbId,
       imdbId: details.imdbId,
       title: details.title,
@@ -444,14 +450,14 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
       addedById: adder.id,
       addedAt: Date.now(),
     };
-    if (!existing) {
+    if (!added) {
       list.films.push(film);
       await save();
     }
     const item = await jellyfinItem(film);
     const seenAt = (await watchIndex()).finished.get(historyId(film, item)) ?? null;
     const elsewhere = !item ? film.elsewhere ?? null : null;
-    return { film, details, existing: !!existing, embed: cardEmbed(details, { item, elsewhere, seenAt, addedBy: await adderName(film) }) };
+    return { film, details, existing: !!added, embed: cardEmbed(details, { item, elsewhere, seenAt, addedBy: await adderName(film) }) };
   }
 
   function addedText({ film, existing }) {
@@ -713,15 +719,35 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
     }
   }
 
+  const onMessage = message => {
+    handleMessage(message).catch(error => console.error('Wishlist message failed:', error));
+  };
+
+  /** Jellyfin or TMDB being down does not end the room: the refresh tries again. */
   async function start() {
     if (!channel()) throw new Error('Wishlist channel not found');
-    client.on('messageCreate', message => {
-      handleMessage(message).catch(error => console.error('Wishlist message failed:', error));
-    });
-    await importExisting();
-    await resolveAdderIds();
-    await renderList();
-    setInterval(refresh, PERIODIC_REFRESH_MS).unref();
+    client.on('messageCreate', onMessage);
+    refreshInterval = setInterval(refresh, PERIODIC_REFRESH_MS);
+    refreshInterval.unref();
+    await importExisting().catch(error => console.error('Wishlist import failed:', error.message));
+    await resolveAdderIds().catch(error => console.error('Wishlist names failed:', error.message));
+    await renderList().catch(error => console.error('Wishlist first render failed:', error.message));
+  }
+
+  function stop() {
+    client.off('messageCreate', onMessage);
+    clearInterval(refreshInterval);
+    clearTimeout(refreshTimer);
+  }
+
+  /** A history entry was removed by hand: a wish it fulfilled is open again. */
+  async function restoreWish(entry) {
+    const list = await load();
+    const index = (list.done ?? []).findIndex(film => film.seenAt === entry.endedAt);
+    if (index === -1) return;
+    const [{ seenAt, ...film }] = list.done.splice(index, 1);
+    if (!list.films.some(f => f.tmdbId === film.tmdbId)) list.films.push(film);
+    await save();
   }
 
   /** For the statistics: films still wished for, and those watched since ({ ...film, seenAt }). */
@@ -730,5 +756,5 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
     return { open: list.films, done: list.done ?? [] };
   }
 
-  return { start, refresh, handleInteraction, entries };
+  return { start, stop, refresh, restoreWish, handleInteraction, entries };
 }
