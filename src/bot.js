@@ -39,6 +39,10 @@ const GENRE_CACHE_MS = 10 * 60_000;
 const SLOW_LIST_MS = Number(process.env.SLOW_LIST_MS ?? 1500);
 // Played this close to the end counts as watched (credits).
 const WATCHED_TAIL = 0.92;
+// The button on a stopped item's message: this barely started means from the beginning,
+// otherwise it goes back this much, for people to catch up.
+const RESUME_MIN_SECONDS = 60;
+const RESUME_REWIND_SECONDS = 5;
 const POSTER_FILE = 'poster.jpg';
 const AUTOPLAY_FILE = 'autoplay.json';
 const AUTOPLAY_MAX_AGE_MS = 10 * 60_000;
@@ -151,6 +155,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   let genreCache = null;
   let nowPlaying = null; // { message, requestedBy, requestedById, resumedFrom, poster, next, skipNext }
   let lastTracks = null; // track languages of the item that just stopped, for the next episode
+  let lastStop = null; // where the item that just stopped was, for the button on its message
   // Played time and who was in the voice room, for the item now playing (statistics).
   let watching = null; // { itemId, watched, viewers: { id: { name, seconds } }, at }
   const recoveries = new Map(); // item ID -> times it was started again after failing
@@ -287,13 +292,47 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     return new EmbedBuilder().setColor(0x4e5058).setTitle(itemLabel(item)).setDescription(text);
   }
 
+  /**
+   * For a message of something not finished: a button that goes on from where it stopped.
+   * The ID carries it all ("fr:<position>:<audio>:<subtitle>:<item>"), so it works after
+   * restarts; an ID holds 100 characters, which a long web address may not fit.
+   */
+  function resumeRows(item) {
+    if (lastStop?.itemId !== item.Id || lastStop.done) return [];
+    const { position, audio, subtitle } = lastStop;
+    const id = `fr:${Math.floor(position)}:${audio ?? ''}:${subtitle ?? ''}:${item.Id}`;
+    if (id.length > 100) return [];
+    const label = item.web?.live ? '▶ Naladit znovu' : position < RESUME_MIN_SECONDS ? '▶ Pustit znovu' : `▶ Pokračovat od ${formatTime(position)}`;
+    return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(ButtonStyle.Primary))];
+  }
+
+  function endedPayload(item, text) {
+    return { content: '', embeds: [endedEmbed(item, text)], components: resumeRows(item), attachments: [] };
+  }
+
+  async function handleResume(interaction) {
+    const [, position, audio, subtitle, ...rest] = interaction.customId.split(':');
+    const id = rest.join(':');
+    if (busyElsewhere()) throw new UserError(BUSY);
+    if (playing() && player.item.Id === id) throw new UserError('Tohle už běží.');
+    await interaction.deferReply();
+    const seconds = Number(position);
+    const index = value => (value === '' ? null : Number(value));
+    await startPlayback(interaction, await cachedItem(id), {
+      startSeconds: seconds < RESUME_MIN_SECONDS ? 0 : seconds - RESUME_REWIND_SECONDS,
+      tracks: { audioIndex: index(audio), subtitleIndex: index(subtitle) },
+    });
+    // The new message has the controls now.
+    await interaction.message.edit({ components: [] }).catch(() => {});
+  }
+
   async function retireNowPlaying(item, text, { remove = false } = {}) {
     const message = nowPlaying?.message;
     nowPlaying = null;
     await forgetNowPlaying();
     if (!message) return;
     if (remove) await message.delete().catch(() => {});
-    else await message.edit({ content: '', embeds: [endedEmbed(item, text)], components: [], attachments: [] }).catch(() => {});
+    else await message.edit(endedPayload(item, text)).catch(() => {});
   }
 
   // ---- Surviving crashes and restarts -------------------------------------
@@ -335,7 +374,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   /** Ends the message of `current`, also when another now-playing replaced it meanwhile. */
   async function retireMessage(current, item, text) {
     if (nowPlaying === current) return retireNowPlaying(item, text);
-    await current?.message?.edit({ content: '', embeds: [endedEmbed(item, text)], components: [], attachments: [] }).catch(() => {});
+    await current?.message?.edit(endedPayload(item, text)).catch(() => {});
   }
 
   /**
@@ -1220,6 +1259,14 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   // What the player reports about this server's item (startBot passes them on).
   const onPlayer = {
     stopped(event) {
+      const duration = durationSeconds(event.item);
+      lastStop = {
+        itemId: event.item.Id,
+        position: event.position,
+        audio: event.audio?.Index ?? null,
+        subtitle: event.subtitle?.Index ?? null,
+        done: event.finished || (!!duration && event.position >= duration * WATCHED_TAIL),
+      };
       storeProgress(event, nowPlaying?.requestedBy, nowPlaying?.requestedById).catch(error => console.error('Recording progress failed:', error));
     },
     ended(item) {
@@ -1266,7 +1313,8 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
       return wishlist.handleInteraction(interaction).catch(error => replyError(interaction, error));
     }
     const isList = (interaction.isButton() || interaction.isStringSelectMenu()) && /^f[lsh]:/.test(interaction.customId);
-    if (!interaction.isChatInputCommand() && !isList && !(interaction.isButton() && interaction.customId.startsWith('fv:'))) return;
+    const isResume = interaction.isButton() && interaction.customId.startsWith('fr:');
+    if (!interaction.isChatInputCommand() && !isList && !isResume && !(interaction.isButton() && interaction.customId.startsWith('fv:'))) return;
     if (interaction.channelId !== textChannelId) {
       console.log(`Refused in ${guild.name}: used outside the cinema's text channel`);
       return interaction.reply({ content: `Kino se ovládá jen v <#${textChannelId}>.`, flags: MessageFlags.Ephemeral });
@@ -1293,6 +1341,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     }
     try {
       if (isList) await handleListInteraction(interaction);
+      else if (isResume) await handleResume(interaction);
       else if (interaction.isButton()) await handleButton(interaction);
       else await handleCommand(interaction);
     } catch (error) {

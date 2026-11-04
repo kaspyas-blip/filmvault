@@ -69,7 +69,7 @@ const TOPICS = {
   samo: {
     label: '✨ Co umí samo',
     lines: () => [
-      '**Navazování** – `/pust` pokračuje, kde jste skončili; tlačítko *Pustit od začátku* to vrátí na začátek.',
+      '**Navazování** – `/pust` pokračuje, kde jste skončili; tlačítko *Pustit od začátku* to vrátí na začátek. Pod zprávou nedokoukaného filmu je tlačítko *Pokračovat*.',
       '**Další díl** – 25 s před závěrečnými titulky běží v rohu odpočet a po 5 s titulků hned naváže další díl (i do další série) se stejným jazykem. Potitulkové scény se nepřeskakují. Zrušit jde tlačítkem *Nepouštět další díl*.',
       '**Úvodní znělka** – tlačítko *Přeskočit úvod*; seriál si to pamatuje a u dalších dílů ji přeskočí sám.',
       '**Čeština** – bez výběru stopy se bere český dabing, a když není, české titulky.',
