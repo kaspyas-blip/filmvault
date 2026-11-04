@@ -191,10 +191,10 @@ Pod zprávou o přehrávání jsou tlačítka **−1 min · pauza · +1 min · +
 
 ## Nástroje
 
--  – průvodce: zeptá se na tokeny a adresy, vybere fungující kodér, zapíše  a spustí kontrolu.
--  – zkontroluje nastavení, ffmpeg, Jellyfin a oba účty Discordu a řekne, co opravit.
--  – vytvoří  bez tajných údajů, k nahlášení chyby.
--  – aktualizuje git klon a při selhání se vrátí zpět. Bota nerestartuje.
+- `npm run setup` – průvodce: zeptá se na tokeny a adresy, vybere fungující kodér, zapíše `.env` a spustí kontrolu.
+- `npm run doctor` – zkontroluje nastavení, ffmpeg, Jellyfin a oba účty Discordu a řekne, co opravit.
+- `npm run diagnostics` – vytvoří `diagnostics.txt` bez tajných údajů, k nahlášení chyby.
+- `npm run update` – aktualizuje git klon a při selhání se vrátí zpět. Bota nerestartuje.
 
 ## Když něco nejde
 
