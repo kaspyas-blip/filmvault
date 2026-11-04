@@ -54,9 +54,10 @@ export function titlesIn(text) {
 
 /**
  * dir: the server's data folder; addWatch, history: its watch history;
- * announceRole: ID or name of the role pinged for new films, or null.
+ * announceRole: ID or name of the role pinged for new films, or null;
+ * jellyfinProgress: this server's watched marks go to Jellyfin too.
  */
-export function createWishlist({ client, channelId, allowed, userName, play, dir, addWatch, history, announceRole: announceRoleName = null }) {
+export function createWishlist({ client, channelId, allowed, userName, play, dir, addWatch, history, announceRole: announceRoleName = null, jellyfinProgress = true }) {
   const FILE = `${dir}/wishlist.json`;
   let state = null; // { listMessageId, imported, films, done, knownMovies, arrivals }
   let writing = Promise.resolve();
@@ -616,7 +617,7 @@ export function createWishlist({ client, channelId, allowed, userName, play, dir
     const full = item ? await getItem(item.Id).catch(() => null) : null;
     const duration = full ? durationSeconds(full) : null;
     await addWatch({ id: historyId(film, item), label: filmLabel(film), by, byId, endedAt: Date.now(), position: duration ?? 0, duration, finished: true });
-    if (item) await saveProgress(item.Id, { played: true }).catch(error => console.error('Marking played in Jellyfin failed:', error.message));
+    if (item && jellyfinProgress) await saveProgress(item.Id, { played: true }).catch(error => console.error('Marking played in Jellyfin failed:', error.message));
   }
 
   async function handleInteraction(interaction) {

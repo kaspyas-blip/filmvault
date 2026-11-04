@@ -7,7 +7,7 @@ Napíšeš `/pust Zohan` a film se za pár vteřin objeví v hlasovém kanálu j
 ## Co umí
 
 - **YouTube a Kick** – do `/pust` místo názvu vložíš odkaz na video, přenos nebo kanál. Živé přenosy jdou pauzovat, ale ne posouvat. Potřebuje [yt-dlp](https://github.com/yt-dlp/yt-dlp) (`tools/yt-dlp.exe`, bot si ho sám aktualizuje)
-- **Víc serverů** – správce nového serveru spustí `/nastavit` a server má vlastní historii, statistiky, seznam i nastavení. Vysílat jde jen na jednom serveru naráz, ostatním bot napíše, že se promítá jinde
+- **Víc serverů** – správce nového serveru spustí `/nastavit` a server má vlastní historii, statistiky, seznam i nastavení. Pozici a „zhlédnuto“ ukládá do Jellyfinu jen první server, ostatní navazují podle své historie. Vysílat jde jen na jednom serveru naráz, ostatním bot napíše, že se promítá jinde
 - **Vyhledávání a výběr** – `/pust` s našeptáváním, `/filmy` s filtrem žánru, roku a českého dabingu, `/serialy` s výběrem série a dílu
 - **Ovládání** – pauza, posun (`1:20:00`, `+5`, `-30s`), tlačítka pod zprávou, změna zvukové stopy a titulků za běhu
 - **Navazování** – pokračuje tam, kde jste skončili, pozice se ukládá do Jellyfinu

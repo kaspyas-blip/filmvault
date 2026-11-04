@@ -144,6 +144,9 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   const { textChannelId, voiceChannelId, wishlistChannelId, allowedRole, announceRole, dir } = setup;
   const guildId = guild.id;
   const nowPlayingFile = `${dir}/${NOW_PLAYING_FILE}`;
+  // Jellyfin has one account for the cinema, so only the first server keeps its progress
+  // there; the others go on from their own history, or they would pick up each other's.
+  const jellyfinProgress = dir === 'data';
   const { history, addWatch, recordWatch, removeWatch } = createHistory(dir);
   const { loadSettings, updateSettings } = createSettings(dir);
   const { loadQuality, saveQuality } = createQualityStore(dir);
@@ -172,6 +175,8 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   const busy = () => starting > 0 || !!recovery || (player.guildId === guildId && (player.active || player.countdown !== null));
 
   const loadItem = id => (isWebUrl(id) ? webItem(id) : getItem(id));
+
+  const savesToJellyfin = item => jellyfinProgress && !item.web;
 
   async function cachedItem(id) {
     const hit = itemCache.get(id);
@@ -575,9 +580,9 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     }
   }
 
-  /** Where a video from the web was left off; Jellyfin keeps this only for its own films. */
-  async function webResume(item) {
-    if (item.web.live) return null;
+  /** Where this server left off something Jellyfin does not keep for it (see jellyfinProgress). */
+  async function historyResume(item) {
+    if (item.web?.live) return null;
     const last = (await history()).find(entry => entry.id === item.Id);
     return last && !last.finished && last.position >= 60 ? Math.max(0, last.position - 5) : null;
   }
@@ -585,7 +590,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   async function startItem(item, { startSeconds = null, zvuk = null, titulky = null, tracks = null, byId = null } = {}, requestedBy, send, note = '') {
     const source = mediaSource(item);
     const defaults = tracks ?? defaultTracks(source, zvuk && zvuk !== SUBTITLES_OFF ? Number(zvuk) : null);
-    const resumedFrom = startSeconds === null ? (item.web ? await webResume(item) : resumeSeconds(item)) : null;
+    const resumedFrom = startSeconds === null ? (savesToJellyfin(item) ? resumeSeconds(item) : await historyResume(item)) : null;
     const previous = playing() ? player.item : null;
     const next = await findNextEpisode(item);
     try {
@@ -723,7 +728,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
         id: item.Id, label: itemLabel(item), by: requestedBy, byId: requestedById, startedAt, position, duration, finished: !!watched,
         watched: seen.watched, viewers: seen.viewers,
       }),
-      !item.web && (position >= 60 || watched)
+      savesToJellyfin(item) && (position >= 60 || watched)
         ? saveProgress(item.Id, { seconds: position, played: !!watched }).catch(error => console.error('Saving progress failed:', error.message))
         : null,
     ]);
@@ -1136,7 +1141,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
     const position = finished ? duration ?? 0 : parsed.seconds;
     await addWatch({ id: item.Id, label: itemLabel(item), by: userName(interaction), byId: interaction.user.id, endedAt, position, duration, finished });
     // Jellyfin shows it as seen (or where to go on) too.
-    if (!item.web) await saveProgress(item.Id, { seconds: position, played: finished }).catch(error => console.error('Saving progress failed:', error.message));
+    if (savesToJellyfin(item)) await saveProgress(item.Id, { seconds: position, played: finished }).catch(error => console.error('Saving progress failed:', error.message));
     wishlist?.refresh();
     const state = finished ? 'jako dokoukané' : `se skončením v ${formatTime(position)}`;
     return interaction.editReply(`✍️ Zapsáno do historie: **${itemLabel(item)}**, ${formatDate(endedAt)}, ${state}. Odebrat jde v /videli.`);
@@ -1327,7 +1332,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
   // Keep the resume position fresh in case the MiniPC or bot dies mid-film.
   let lastSaved = null;
   setInterval(() => {
-    if (!playing() || player.paused || player.item.web) return;
+    if (!playing() || player.paused || !savesToJellyfin(player.item)) return;
     const position = player.position();
     if (position < 60 || lastSaved === Math.round(position)) return;
     lastSaved = Math.round(position);
@@ -1415,6 +1420,7 @@ function createCinema({ client, player, guild, setup, busyElsewhere }) {
         addWatch,
         history,
         announceRole,
+        jellyfinProgress,
       });
       await wishlist.start();
       console.log(`Wishlist running in #${room.name}`);
