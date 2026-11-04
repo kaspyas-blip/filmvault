@@ -12,7 +12,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test --test-timeout=30000 test/*.test.js"
+    "test": "node --test --test-timeout=30000 test/*.test.js",
+    "lint": "eslint src test tools/doctor.mjs index.js",
+    "doctor": "node tools/doctor.mjs"
   },
   "engines": {
     "node": ">=22.4.0"
@@ -22,5 +24,8 @@
     "@lng2004/discord.js-selfbot-v13": "^3.7.2",
     "discord.js": "^14.27.0",
     "koffi": "^3.3.4"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5"
   }
 }

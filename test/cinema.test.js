@@ -11,7 +11,7 @@ testEnv();
 const root = mkdtempSync(join(tmpdir(), 'filmvault-cinema-'));
 const startDir = process.cwd();
 process.chdir(root);
-const { createCinema } = await import('../src/bot.js');
+const { createCinema } = await import('../src/cinema.js');
 const { Player } = await import('../src/player.js');
 
 after(() => {
@@ -178,7 +178,6 @@ const history = dir => JSON.parse(readFileSync(`${dir}/history.json`, 'utf8'));
 
 let w;
 let main;
-let dirCounter = 0;
 
 beforeEach(() => {
   Object.assign(console, { log() {}, warn() {}, error() {} });
