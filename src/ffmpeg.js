@@ -52,7 +52,7 @@ export function hdrTransfer(video) {
  * subtitle: null | { kind: 'text', file } (relative .ass path) | { kind: 'image', index }
  * hdr: input transfer ('smpte2084' / 'arib-std-b67') to tone map to SDR, or null
  * sourceFps: the film's frame rate (see outputRate)
- * quality: { height, bitrate } (see quality.js)
+ * quality: { height, bitrate, keyframeSeconds?, bufferSeconds? } (see quality.js)
  * overlayFile: text file drawn in the corner, read again twice a second (empty = nothing), or null
  * sound: 'normal', or 'night' (dialogue louder, loud scenes compressed)
  * audioUrl: separate sound of a video from the web, or null
@@ -68,7 +68,7 @@ export function buildFfmpegArgs({
   const encoderName = softwareFallback ? 'libx264' : config.encoder;
   const encoder = ENCODER_OPTIONS[encoderName] ?? ENCODER_OPTIONS.libx264;
   const start = Math.max(0, Math.floor(startSeconds));
-  const { bitrate } = quality;
+  const { bitrate, keyframeSeconds = 1, bufferSeconds = 0.5 } = quality;
   const { rate, fps } = outputRate(sourceFps);
 
   const args = ['-hide_banner', '-loglevel', 'error', '-nostats'];
@@ -117,10 +117,10 @@ export function buildFfmpegArgs({
     '-c:v', encoderName, ...encoder.options,
     '-b:v', `${bitrate}k`,
     '-maxrate:v', `${Math.round(bitrate * 1.4)}k`,
-    '-bufsize:v', `${Math.round(bitrate / 2)}k`,
+    '-bufsize:v', `${Math.round(bitrate * bufferSeconds)}k`,
     '-bf', '0',
-    '-g', String(Math.round(fps * 2)),
-    '-force_key_frames', 'expr:gte(t,n_forced*1)',
+    '-g', String(Math.round(fps * Math.max(2, keyframeSeconds))),
+    '-force_key_frames', `expr:gte(t,n_forced*${keyframeSeconds})`,
     ...(sound === 'night' ? ['-center_mix_level', '1'] : []),
     ...(audioFilters.length ? ['-af', audioFilters.join(',')] : []),
     '-ac', '2', '-lfe_mix_level', '1', '-ar', '48000',

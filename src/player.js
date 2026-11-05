@@ -7,7 +7,7 @@ import { BaseMediaConnection, GatewayOpCodes, Streamer, playStream } from '@dank
 import { config } from './config.js';
 import { buildFfmpegArgs, hdrTransfer } from './ffmpeg.js';
 import { t } from './i18n.js';
-import { DEFAULT_QUALITY, QUALITIES } from './quality.js';
+import { DEFAULT_QUALITY, streamQuality } from './quality.js';
 import { raiseTimerResolution } from './timer.js';
 import {
   audioTracks, downloadSubtitle, durationSeconds, itemLabel, mediaSource, streamUrl, subtitleTracks,
@@ -377,7 +377,7 @@ export class Player extends EventEmitter {
           const patched = patchConnection(
             conn,
             () => this.holdingLive,
-            () => (QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY]).bitrate,
+            () => streamQuality(this.quality, !!this.item?.web).bitrate,
           );
           if (this.liveCreating === creating) this.liveConn = patched;
           return patched;
@@ -810,7 +810,7 @@ export class Player extends EventEmitter {
       subtitle: this.subtitle,
       softwareFallback,
       sourceFps: video?.RealFrameRate ?? video?.AverageFrameRate ?? null,
-      quality: QUALITIES[this.quality] ?? QUALITIES[DEFAULT_QUALITY],
+      quality: streamQuality(this.quality, !!web),
       overlayFile: OVERLAY_FILE,
       sound: this.sound,
     });

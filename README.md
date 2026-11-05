@@ -98,7 +98,7 @@ Copy `.env.example` to `.env`. Defaults are those in `src/config.js`. `.env.exam
 | `HW_DECODE` | ffmpeg `-hwaccel` method: `d3d11va` (Windows), `cuda`, `vaapi` (Linux), `0` or empty = CPU | none (`.env.example`: `d3d11va`) |
 | `VIDEO_HEIGHT` | Maximum output height. Without Nitro, 720 | `720` |
 | `VIDEO_FPS` | Maximum frame rate; films keep their own rate below it, faster sources are halved | `30` |
-| `VIDEO_BITRATE` | Video bitrate in kb/s | `3500` (`.env.example`: `2500`) |
+| `VIDEO_BITRATE` | Video bitrate in kb/s for films. YouTube and Kick get 1.4 times this, they need it for fast games and small text | `3500` (`.env.example`: `2500`) |
 | `AUDIO_BITRATE` | Audio bitrate in kb/s | `128` |
 | `IDLE_LEAVE_MINUTES` | Leave the call after this long with nothing playing | `5` |
 | `WISHLIST_CHANNEL` | Wishlist room of the first server | `filmy` |

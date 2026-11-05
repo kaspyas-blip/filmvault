@@ -147,3 +147,29 @@ test('shared stretch of two fingerprints', () => {
   assert.ok(Math.abs(shared.a[1] - 400 * point) < 1);
   assert.equal(sharedStretch(noise(100), noise(77)), null);
 });
+
+test('web videos get more bits and rarer keyframes, films stay as they were', async () => {
+  const { QUALITIES, streamQuality } = await import('../src/quality.js');
+  const value = (args, flag) => args[args.indexOf(flag) + 1];
+  const encode = quality => buildFfmpegArgs({ url: 'https://example.com/a.m3u8', sourceFps: 30, quality });
+
+  const film = encode(streamQuality('vysoka'));
+  const { bitrate } = QUALITIES.vysoka;
+  assert.equal(streamQuality('vysoka'), QUALITIES.vysoka);
+  assert.equal(value(film, '-b:v'), `${bitrate}k`);
+  assert.equal(value(film, '-bufsize:v'), `${Math.round(bitrate / 2)}k`);
+  assert.equal(value(film, '-g'), '60');
+  assert.equal(value(film, '-force_key_frames'), 'expr:gte(t,n_forced*1)');
+
+  const web = encode(streamQuality('vysoka', true));
+  const webBitrate = Math.round(bitrate * 1.4);
+  assert.equal(value(web, '-b:v'), `${webBitrate}k`);
+  assert.equal(value(web, '-maxrate:v'), `${Math.round(webBitrate * 1.4)}k`);
+  assert.equal(value(web, '-bufsize:v'), `${webBitrate}k`);
+  assert.equal(value(web, '-g'), '60');
+  assert.equal(value(web, '-force_key_frames'), 'expr:gte(t,n_forced*2)');
+
+  // The lower levels stay lower, and a key that is gone falls back to the default.
+  assert.ok(streamQuality('nizka', true).bitrate < streamQuality('vysoka').bitrate);
+  assert.equal(streamQuality('gone', true).bitrate, webBitrate);
+});
